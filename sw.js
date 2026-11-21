@@ -1,0 +1,91 @@
+/* Home Life service worker. Same-origin: stale-while-revalidate. Fonts and the
+   Anthropic SDK: cache-first. Everything else goes straight to the network. */
+const VERSION = 'home-life-v1';
+const CORE = VERSION + '-core';
+const RUNTIME = VERSION + '-runtime';
+
+const PRECACHE = [
+  './', './index.html', './styles.css', './app.js',
+  './js/store.js', './js/time.js', './js/weather.js', './js/geo.js',
+  './js/calendar.js', './js/travel.js', './js/insights.js', './js/ai.js',
+  './js/icons.js', './js/render.js', './js/settings.js',
+  './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
+  './icons/favicon.svg', './calendar-bridge/Code.gs'
+];
+
+const CACHE_FIRST_PREFIXES = [
+  'https://fonts.googleapis.com/',
+  'https://fonts.gstatic.com/',
+  'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CORE);
+    await Promise.all(PRECACHE.map(async (url) => {
+      try {
+        const res = await fetch(new Request(url, { cache: 'reload' }));
+        if (res && res.ok) await cache.put(url, res);
+      } catch (_) { /* ignore individual failures */ }
+    }));
+  })());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const keep = [CORE, RUNTIME];
+    const names = await caches.keys();
+    await Promise.all(names.filter((n) => !keep.includes(n)).map((n) => caches.delete(n)));
+    await self.clients.claim();
+  })());
+});
+
+async function staleWhileRevalidate(request, event) {
+  const cache = await caches.open(CORE);
+  const cached = await cache.match(request, { ignoreSearch: request.mode === 'navigate' });
+  const network = fetch(request).then((res) => {
+    if (res && res.ok && res.type === 'basic') cache.put(request, res.clone());
+    return res;
+  });
+  if (cached) {
+    event.waitUntil(network.catch(() => {}));
+    return cached;
+  }
+  try {
+    return await network;
+  } catch (err) {
+    if (request.mode === 'navigate') {
+      const fallback = await cache.match('./index.html') || await cache.match('./');
+      if (fallback) return fallback;
+    }
+    throw err;
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(RUNTIME);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  const res = await fetch(request);
+  if (res && (res.ok || res.type === 'opaque')) cache.put(request, res.clone());
+  return res;
+}
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+
+  if (url.origin === self.location.origin) {
+    event.respondWith(staleWhileRevalidate(request, event));
+    return;
+  }
+  if (CACHE_FIRST_PREFIXES.some((p) => request.url.startsWith(p))) {
+    event.respondWith(cacheFirst(request));
+  }
+  // Anything else is not intercepted.
+});
