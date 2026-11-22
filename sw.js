@@ -1,7 +1,7 @@
 /* Home Life service worker. Same-origin: stale-while-revalidate. Fonts, the
    Anthropic SDK and the QR library: cache-first. Everything else goes straight to the network, and the
    Firebase SDK (www.gstatic.com), OpenStreetMap and RainViewer are never intercepted. */
-const VERSION = 'home-life-v6';
+const VERSION = 'home-life-v7';
 const CORE = VERSION + '-core';
 const RUNTIME = VERSION + '-runtime';
 
@@ -13,6 +13,7 @@ const PRECACHE = [
   './js/parks.js', './js/tripprep.js', './js/evening.js', './js/compose.js',
   './js/briefing.js', './js/calendars.js', './js/phoenix.js', './js/meals.js', './js/workout.js', './js/speech.js',
   './js/connections.js', './js/fb.js', './js/settings2.js', './js/devicesetup.js', './js/setupui.js',
+  './js/plan.js', './js/planui.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
   './icons/favicon.svg', './calendar-bridge/Code.gs', './calendar-bridge/appsscript.json'
 ];

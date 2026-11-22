@@ -9,6 +9,7 @@ import { yourDay } from './calendar.js';
 import { workoutTitle, workoutDetail, windowLine } from './workout.js';
 import { osmTile, radarTile } from './phoenix.js';
 import { LINKS } from './connections.js';
+import { planCardHTML } from './planui.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 /** Escape, then turn *one phrase* into <em>. */
@@ -579,10 +580,25 @@ export function fineHTML(view) {
 }
 
 // ---------- all ----------
+/** Fills the trip plan card (hidden when `plan` is null), keeping the keyboard focus on the same checkbox. */
+export function renderPlanCard(plan, el) {
+  const html = plan ? planCardHTML(plan) : '';
+  if (!html) { el.hidden = true; el.innerHTML = ''; return; }
+  const f = document.activeElement;
+  const sel = f && el.contains(f) && f.matches('input[data-plan-item], input[data-plan-check]') ? `input[${f.hasAttribute('data-plan-item') ? 'data-plan-item' : 'data-plan-check'}="${CSS.escape(f.getAttribute('data-plan-item') || f.getAttribute('data-plan-check'))}"]` : '';
+  const open = el.querySelector('details.plan-earlier') && el.querySelector('details.plan-earlier').open;
+  el.innerHTML = html;
+  el.hidden = false;
+  const d = el.querySelector('details.plan-earlier');
+  if (d && open) d.open = true;
+  if (sel) { const n = el.querySelector(sel); if (n) n.focus({ preventScroll: true }); }
+}
+
 export function renderAll(view, els) {
   const strip = els.hourly.querySelector('.hstrip');
   const scrollLeft = strip ? strip.scrollLeft : 0;
   els.hero.innerHTML = heroHTML(view);
+  if (els.plan) renderPlanCard(view.plan, els.plan);
   const ready = view.status === 'ready';
   for (const k of ['hourly', 'week', 'fine']) els[k].hidden = !ready;
   const rundown = ready ? rundownHTML(view) : '';
