@@ -2,17 +2,19 @@
 import { icon } from './icons.js';
 import { searchCities, reverseGeocode, currentPosition, placeLabel } from './geo.js';
 import { fetchCalendar, describeCalendarError } from './calendar.js';
-import { fmtMonthDay } from './time.js';
+import { fmtMonthDay, fmtDateRange } from './time.js';
+import { parseChecklist, checklistItems } from './tripprep.js';
+import { eveningStart } from './evening.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
 
 // ---------- city picker ----------
-export function mountCityPicker(root, { prefix, onPick }) {
+export function mountCityPicker(root, { prefix, onPick, locate: withLocate = true, placeholder = 'search for a city, like springfield, il' }) {
   root.innerHTML = `
     <label class="vh" for="${prefix}-search">search for a city</label>
-    <input id="${prefix}-search" type="search" placeholder="search for a city, like springfield, il" autocomplete="off" spellcheck="false" enterkeyhint="search">
+    <input id="${prefix}-search" type="search" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false" enterkeyhint="search">
     <div class="results" id="${prefix}-results" role="listbox" aria-label="matching places"></div>
-    <button class="btn loc-btn" type="button" id="${prefix}-locate">${icon('pin', { size: 16 })} use my current location</button>
+    <button class="btn loc-btn" type="button" id="${prefix}-locate"${withLocate ? '' : ' hidden'}>${icon('pin', { size: 16 })} use my current location</button>
     <p class="msg" id="${prefix}-msg" role="status"></p>`;
   const input = root.querySelector(`#${prefix}-search`);
   const results = root.querySelector(`#${prefix}-results`);
@@ -73,7 +75,7 @@ const STEPS = `
   <li>Open <b>Project Settings</b> (gear icon) and tick <b>Show "appsscript.json" manifest file in editor</b>.</li>
   <li>Back in the editor, open <b>appsscript.json</b> and paste over it (<b>copy manifest</b> below).</li>
   <li>Click <b>Deploy → New deployment</b>, choose <b>Web app</b>, set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
-  <li>Approve the Google permission prompt (read-only calendar and gmail).</li>
+  <li>Approve the Google permission prompt (read-only calendar, gmail, drive and contacts).</li>
   <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it below, then tap <b>test connection</b>.</li>`;
 
 const UPDATE_STEPS = `
@@ -105,7 +107,7 @@ function markup(s) {
     <section class="set-sec" id="set-calendar" aria-labelledby="set-cal-h">
       <h3 id="set-cal-h">Google</h3>
       <p class="status" id="cal-status">not connected</p>
-      <div class="notice" id="cal-update" hidden><b>your google script is out of date.</b> to add inbox &amp; drive times:<ol>${UPDATE_STEPS}</ol></div>
+      <div class="notice" id="cal-update" hidden><b>your google script is out of date.</b> <span id="cal-update-what"></span><ol>${UPDATE_STEPS}</ol></div>
       <ol class="steps" id="cal-steps">${STEPS}</ol>
       <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button>
         <button class="btn btn-accent" type="button" id="cal-copy-manifest">${icon('calendar', { size: 16 })} copy manifest</button></div>
@@ -122,7 +124,35 @@ function markup(s) {
       <p class="subhead">show in the app</p>
       <label class="switch" for="show-inbox"><input type="checkbox" id="show-inbox"${s.show.inbox ? ' checked' : ''}> show waiting on you</label>
       <label class="switch" for="show-leaveby"><input type="checkbox" id="show-leaveby"${s.show.leaveBy ? ' checked' : ''}> show leave-by times</label>
-      <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times and oura scores. keep them private.</p>
+      <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times, park hours and oura scores. keep them private.</p>
+    </section>
+
+    <section class="set-sec" id="set-trip" aria-labelledby="set-trip-h">
+      <h3 id="set-trip-h">Trips</h3>
+      <p class="status" id="trip-status">no trip added here</p>
+      <p class="note tight">trips are spotted from your calendar. add one here if it isn't on the calendar yet, or before you connect google.</p>
+      <div class="picker" id="trip-picker"></div>
+      <div class="date-row">
+        <div><label for="trip-depart">leave</label><input type="date" id="trip-depart" value="${esc(s.trip.manual ? s.trip.manual.departDate : '')}"></div>
+        <div><label for="trip-return">back home</label><input type="date" id="trip-return" value="${esc(s.trip.manual ? s.trip.manual.returnDate : '')}"></div>
+      </div>
+      <div class="set-row"><button class="btn btn-accent" type="button" id="trip-save">${icon('suitcase', { size: 16 })} save trip</button>
+        <button class="btn" type="button" id="trip-clear"${s.trip.manual ? '' : ' hidden'}>remove trip</button></div>
+      <p class="result" id="trip-result" role="status"></p>
+      <p class="subhead">show in the app</p>
+      <label class="switch" for="show-tripprep"><input type="checkbox" id="show-tripprep"${s.show.tripPrep !== false ? ' checked' : ''}> trip prep, from 3 days before you leave</label>
+      <label class="switch" for="show-parks"><input type="checkbox" id="show-parks"${s.show.parks !== false ? ' checked' : ''}> park days (hours, shows, waits)</label>
+      <label for="trip-checklist">before you go, one per line</label>
+      <textarea id="trip-checklist" class="list" rows="5" spellcheck="false">${esc(checklistItems(s.trip.checklist).join('\n'))}</textarea>
+      <p class="note">packing ideas come from the forecast where you're going. ticks are kept for each trip on this device.</p>
+    </section>
+
+    <section class="set-sec" id="set-evening" aria-labelledby="set-evening-h">
+      <h3 id="set-evening-h">Evening</h3>
+      <label class="switch" for="evening-on"><input type="checkbox" id="evening-on"${s.evening.enabled !== false ? ' checked' : ''}> show tomorrow's edition in the evening</label>
+      <label for="evening-start">starting at</label>
+      <input type="time" id="evening-start" value="${esc(eveningStart(s.evening))}">
+      <p class="note">from this time until midnight the top card previews tomorrow: the high, your first event, what to wear and tonight's low. "show today" switches back for the rest of the evening.</p>
     </section>
 
     <section class="set-sec" id="set-oura" aria-labelledby="set-oura-h">
@@ -203,13 +233,56 @@ function build() {
     try {
       const st = api.getSettings();
       const res = await fetchCalendar(url, st.calendar.secret);
-      out.textContent = `found ${res.events.length} event${res.events.length === 1 ? '' : 's'} · script v${res.version}${res.version < 2 ? ', update it to add inbox & drive times' : ''}`;
+      out.textContent = `found ${res.events.length} event${res.events.length === 1 ? '' : 's'} · script v${res.version}${res.version < 3 ? ', update it to add park hours & trip drive times' : ''}`;
       if (st.calendar.url !== url) { st.calendar.url = url; }
       api.save(st, 'calendar');
       refreshStatus();
     } catch (err) {
       out.textContent = describeCalendarError(err); out.classList.add('err');
     }
+  });
+
+  // trips
+  let tripPlace = s.trip.manual ? { name: s.trip.manual.city, region: s.trip.manual.region || '', lat: s.trip.manual.lat, lon: s.trip.manual.lon, countryCode: s.trip.manual.countryCode || '' } : null;
+  mountCityPicker($('trip-picker'), {
+    prefix: 'trip', locate: false, placeholder: 'where to? search for a city',
+    onPick: (place) => {
+      tripPlace = place;
+      $('trip-search').value = placeLabel(place);
+      $('trip-results').innerHTML = '';
+      say('trip-result', `going to ${placeLabel(place).toLowerCase()}. pick the dates, then save.`);
+    },
+  });
+  if (tripPlace) $('trip-search').value = placeLabel(tripPlace);
+  $('trip-save').addEventListener('click', () => {
+    const dep = $('trip-depart').value; const ret = $('trip-return').value;
+    if (!tripPlace) return say('trip-result', 'search for where you\'re going first.', true);
+    if (!dep || !ret) return say('trip-result', 'pick the day you leave and the day you get back.', true);
+    if (ret < dep) return say('trip-result', 'the day you get back is before the day you leave.', true);
+    const st = api.getSettings();
+    st.trip.manual = { city: tripPlace.name, region: tripPlace.region || '', countryCode: tripPlace.countryCode || '', lat: tripPlace.lat, lon: tripPlace.lon, departDate: dep, returnDate: ret };
+    api.save(st, 'trip');
+    $('trip-clear').hidden = false;
+    say('trip-result', `saved. trip mode is on for ${tripPlace.name.toLowerCase()}, ${fmtDateRange(dep, ret)}.`);
+    refreshStatus();
+  });
+  $('trip-clear').addEventListener('click', () => {
+    const st = api.getSettings(); st.trip.manual = null; api.save(st, 'trip');
+    tripPlace = null; $('trip-search').value = ''; $('trip-depart').value = ''; $('trip-return').value = '';
+    $('trip-clear').hidden = true;
+    say('trip-result', 'removed. trips from your calendar still show up.');
+    refreshStatus();
+  });
+  toggle('show-tripprep', 'tripPrep'); toggle('show-parks', 'parks');
+  $('trip-checklist').addEventListener('change', (e) => {
+    const st = api.getSettings(); st.trip.checklist = parseChecklist(e.target.value); api.save(st, 'checklist');
+    e.target.value = checklistItems(st.trip.checklist).join('\n');
+  });
+
+  // evening
+  $('evening-on').addEventListener('change', (e) => { const st = api.getSettings(); st.evening.enabled = e.target.checked; api.save(st, 'evening'); });
+  $('evening-start').addEventListener('change', (e) => {
+    const st = api.getSettings(); st.evening.start = /^\d{2}:\d{2}$/.test(e.target.value) ? e.target.value : '18:00'; api.save(st, 'evening');
   });
 
   // ai
@@ -234,6 +307,13 @@ function build() {
   });
   refreshStatus();
   refreshInstall();
+}
+
+function say(id, text, err = false) {
+  const out = dialog.querySelector(`#${id}`);
+  if (!out) return;
+  out.textContent = text;
+  out.classList.toggle('err', err);
 }
 
 async function loadText(path) {
@@ -303,12 +383,24 @@ export function refreshStatus() {
     else cal.textContent = 'connected · syncing…';
     const b = st.bridge;
     if (s.calendar.url && b && !(c.error && !c.count)) {
-      const feats = ['calendar', ...(b.version >= 2 && b.features.gmail ? ['gmail'] : []), ...(b.version >= 2 && b.features.leaveBy ? ['drive times'] : [])];
+      const feats = ['calendar', ...(b.version >= 2 && b.features.gmail ? ['gmail'] : []), ...(b.version >= 2 && b.features.leaveBy ? ['drive times'] : []),
+        ...(b.version >= 3 && b.features.parks ? ['park hours'] : []), ...(b.version >= 3 && b.features.tripDrive ? ['trip drive'] : [])];
       cal.innerHTML = `<span class="ok">connected</span> · v${b.version} · ${esc(feats.join(', '))}${c.fetchedAt ? ` · synced ${esc(clockAt(c.fetchedAt, c.offset || 0))}` : ''}`;
     }
   }
   const upd = dialog.querySelector('#cal-update');
-  if (upd) upd.hidden = !(s.calendar.url && st.bridge && st.bridge.version < 2);
+  if (upd) {
+    upd.hidden = !(s.calendar.url && st.bridge && st.bridge.version < 3);
+    const v = st.bridge ? st.bridge.version : 3;
+    dialog.querySelector('#cal-update-what').textContent = `the new version adds ${v < 2 ? 'inbox, drive times, ' : ''}park hours and the drive time for trips. google will ask for two more read-only permissions: drive (to read the daily rundown file) and contacts (for birthdays). to update:`;
+  }
+  const trip = dialog.querySelector('#trip-status');
+  if (trip) {
+    const m = s.trip.manual;
+    const next = (st.trips || []).find((t) => !t.manual && t.returnDate >= (st.today || ''));
+    trip.innerHTML = m ? `<span class="ok">trip mode</span> · ${esc(m.city.toLowerCase())}, ${esc(fmtDateRange(m.departDate, m.returnDate))}`
+      : next ? `from your calendar: ${esc(next.city.toLowerCase())}, ${esc(fmtDateRange(next.departDate, next.returnDate))}` : 'no trip added here';
+  }
   refreshOura(s, st);
 }
 

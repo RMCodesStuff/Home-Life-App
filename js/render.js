@@ -92,6 +92,7 @@ export function heroHTML(view) {
       <button class="btn btn-accent" type="button" data-action="retry">${icon('refresh', { size: 16 })} try again</button></div>`;
   }
 
+  if (view.tomorrow) return tomorrowHeroHTML(view);
   const { ctx, written: w } = view;
   const m = ctx.model;
   const today = datePart(ctx.now);
@@ -100,10 +101,11 @@ export function heroHTML(view) {
   const away = view.awayToday;
   const placeText = away ? `away, ${esc(m.place.name.toLowerCase())}` : `${esc(s.homeLabel || 'home')}, ${esc(homeName)}`;
   const unit = ctx.units === 'metric' ? '°C' : '°F';
-  const travel = view.calendarConnected
-    ? (view.travelLine ? `<p class="travel">${esc(view.travelLine)}</p>`
-      : view.calErrorText && !view.hasCalendarData ? '<p class="travel"><button class="text-btn" type="button" data-action="open-settings-calendar">your calendar link needs attention</button></p>' : '')
-    : '<p class="travel"><button class="text-btn" type="button" data-action="open-settings-calendar">connect your calendar for travel &amp; your day</button></p>';
+  const travel = (view.travelLine ? `<p class="travel">${esc(view.travelLine)}</p>`
+    : view.calendarConnected
+      ? (view.calErrorText && !view.hasCalendarData ? '<p class="travel"><button class="text-btn" type="button" data-action="open-settings-calendar">your calendar link needs attention</button></p>' : '')
+      : '<p class="travel"><button class="text-btn" type="button" data-action="open-settings-calendar">connect your calendar for travel &amp; your day</button></p>')
+    + (view.evening ? '<p class="travel"><button class="text-btn" type="button" data-action="show-tomorrow">tomorrow\'s edition</button></p>' : '');
   const alerts = (m.alerts || []).slice(0, 3).map((a) => {
     let until = '';
     if (a.ends) {
@@ -147,6 +149,83 @@ export function heroHTML(view) {
       <span>${footParts.join(' · ')}</span>
       <button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button>
     </div>`;
+}
+
+// ---------- tomorrow's edition (evening mode) ----------
+const TOMORROW_ICONS = { first: 'calendar', wear: 'shirt', umbrella: 'umbrella', tonight: 'moon' };
+export function tomorrowHeroHTML(view) {
+  const { ctx } = view;
+  const t = view.tomorrow;
+  const m = ctx.model;
+  const unit = ctx.units === 'metric' ? '°C' : '°F';
+  const fade = view.fade ? ' fade-in' : '';
+  const lines = [
+    view.travelLineTarget ? `<p class="travel">${esc(view.travelLineTarget)}</p>` : '',
+    `<p class="travel"><button class="text-btn" type="button" data-action="show-today">now ${r(m.current.temp)}° · show today</button></p>`,
+  ].join('');
+  const chips = t.chips.map((c) => `<li class="chip">${icon(TOMORROW_ICONS[c.key] || 'calendar', { size: 16 })}<b>${esc(c.label)}</b><span>${esc(c.text)}</span></li>`).join('');
+  const foot = [view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`, 'written on-device'];
+  return `
+    <div class="eyebrow">
+      <span class="eb-icon">${icon('moon', { size: 16 })}</span>
+      <span class="eb-text"><span>tomorrow</span><span class="dot">·</span><span>${esc(fmtDateLong(t.date))}</span></span>
+      <button class="icon-btn gear" type="button" data-action="open-settings" aria-label="settings">${icon('gear', { size: 20 })}</button>
+    </div>
+    ${lines}
+    <div class="bigtemp" aria-label="tomorrow's high ${r(t.high)} degrees">${r(t.high)}<span class="deg stack">${unit}<span class="bt-label">high</span></span></div>
+    <div class="cond-row">
+      <span class="big-icon">${weatherIcon(t.code, 1, { size: 56 })}</span>
+      <div><p class="cond${fade}">${esc(t.condition)}</p>
+      <p class="cond-sub">low ${deg(t.low)}${t.sunrise ? ` · sunrise ${esc(fmtClock(t.sunrise))}` : ''}</p></div>
+    </div>
+    <h1 class="headline${fade}">${esc(t.headline_lead)} <em>${esc(t.headline_accent)}</em></h1>
+    <p class="narrative${fade}">${prose(t.narrative)}</p>
+    <ul class="chips${fade}">${chips}</ul>
+    <div class="hero-foot">
+      <span>${foot.join(' · ')}</span>
+      <button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button>
+    </div>`;
+}
+
+// ---------- trip prep & park day (top of the second card) ----------
+const checkRow = (tripId, it) => `<li><label class="check"><input type="checkbox" data-trip="${esc(tripId)}" data-check="${esc(it.key)}"${it.done ? ' checked' : ''}><span>${esc(it.text)}</span></label></li>`;
+export function tripPrepHTML(view) {
+  const p = view.trip && view.trip.prep;
+  if (!p) return '';
+  const when = p.departsIn === 0 ? 'leaving today' : p.departsIn === 1 ? 'leaving tomorrow' : `leaving in ${p.departsIn} days`;
+  return `<div class="topsec tripprep">
+    <div class="card-head"><h2>Trip prep</h2><p class="sub">${esc(p.sub)} · ${when}</p></div>
+    ${p.drive ? `<p class="tp-line">${icon('car', { size: 16 })}<span>${esc(p.drive)}</span></p>` : ''}
+    ${p.conflicts.map((c) => `<p class="tp-line tp-conflict">${icon('alert', { size: 16 })}<span>${esc(c)}</span></p>`).join('')}
+    <div class="tp-cols">
+      ${p.packing.length ? `<div class="tp-col"><p class="tp-label">pack</p><ul class="checks">${p.packing.map((it) => checkRow(p.trip.id, it)).join('')}</ul></div>` : ''}
+      <div class="tp-col"><p class="tp-label">before you go</p><ul class="checks">${p.todo.map((it) => checkRow(p.trip.id, it)).join('')}</ul></div>
+    </div>
+    ${p.needsUpdate ? '<p class="cal-note"><button class="text-btn muted" type="button" data-action="open-settings-calendar">update your google script for park hours and the drive time</button></p>' : ''}
+  </div>`;
+}
+export function parkDayHTML(view) {
+  const parks = view.trip ? view.trip.park : [];
+  if (!parks.length) return '';
+  const today = datePart(view.ctx.now);
+  const when = parks[0].date === today ? 'today' : 'tomorrow';
+  const blocks = parks.map((p) => `<div class="pd">
+      <h2 class="pd-name">${esc(p.name)}</h2>
+      <p class="pd-hours">${esc(p.hours || 'hours not posted yet')}</p>
+      ${p.shows.length ? `<ul class="pd-shows">${p.shows.map((s) => { const i = s.lastIndexOf(' · '); return `<li>${i > 0 ? `${esc(s.slice(0, i))} · <span class="nw">${esc(s.slice(i + 3))}</span>` : esc(s)}</li>`; }).join('')}</ul>` : ''}
+      ${p.waits.length ? `<p class="tp-label">waits right now</p><ul class="pd-waits">${p.waits.map((w) => `<li><span class="pw-name">${esc(w.name)}</span><span class="pw-min">${w.minutes} min</span></li>`).join('')}</ul>` : ''}
+      ${p.layer ? `<p class="tp-line">${icon('shirt', { size: 16 })}<span>${esc(p.layer)}</span></p>` : ''}
+    </div>`).join('');
+  return `<div class="topsec parkday">
+    <p class="top-eyebrow">${icon('ferris', { size: 16 })}<span>park day · ${when}</span></p>
+    ${blocks}
+    <p class="pd-credit">park data from <a href="https://themeparks.wiki" target="_blank" rel="noopener">themeparks.wiki</a></p>
+  </div>`;
+}
+/** Park day replaces trip prep. */
+export function topHTML(view) {
+  const html = parkDayHTML(view) || tripPrepHTML(view);
+  return html ? `${html}<hr class="rule top-rule">` : '';
 }
 
 // ---------- hour by hour ----------
@@ -207,6 +286,7 @@ export function hourlyHTML(view) {
   const waiting = waitingHTML(view);
   const sr = `${hours.map((h) => `${fmtHourShort(hourOf(h.time))} ${Math.round(h.temp)} degrees, ${h.precipProb ?? 0}% rain`).join('; ')}`;
   return `
+    ${topHTML(view)}
     <div class="card-head"><h2>Hour by hour</h2>
       <p class="sub">open-meteo hourly, ${esc(m.place.name.toLowerCase())}, updated ${esc(clockAt(view.wxFetchedAt, m.offset))}</p></div>
     <hr class="rule">
@@ -259,7 +339,10 @@ export function yourDayHTML(view) {
     return `${head('<span class="sub-right">calendar</span>')}<div class="day-empty"><p>${esc(view.calErrorText || 'checking your calendar…')}</p>
       ${view.calErrorText ? `<button class="btn" type="button" data-action="open-settings-calendar">${icon('gear', { size: 16 })} calendar settings</button>` : ''}</div>`;
   }
-  const v = yourDay(view.ctx.events, view.ctx.now);
+  const ahead = view.target && view.target !== datePart(view.ctx.now);
+  const v = yourDay(view.ctx.events, view.ctx.now, { date: ahead ? view.target : null });
+  const rightLabel = ahead ? `<span class="sub-right">tomorrow, ${esc(dowShort(view.target))}</span>` : '<span class="sub-right">calendar</span>';
+  const conflicts = (view.trip ? view.trip.dayConflicts : []).map((c) => `<p class="tp-line tp-conflict">${icon('alert', { size: 16 })}<span>${esc(c)}</span></p>`).join('');
   const notes = new Map((view.written.event_notes || []).map((x) => [x.id, x.note]));
   const leaves = new Map((view.written.leave_notes || []).filter((x) => x.note).map((x) => [x.id, x.note]));
   // the accent goes to the next departure that is still ahead
@@ -272,13 +355,13 @@ export function yourDayHTML(view) {
     ? `<p class="earlier">${[v.earlier ? `${v.earlier} earlier today` : '', !v.upcoming.length && v.tomorrow.length ? 'nothing else today' : ''].filter(Boolean).join(' · ')}</p>` : '';
   let list = v.upcoming.map((e) => eventRow(view, e, v.next && e.id === v.next.id, notes, extra)).join('');
   if (!v.upcoming.length && !v.tomorrow.length) {
-    return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}
-      <p class="day-empty">${v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}${stale}`;
+    return `${head(rightLabel)}${chips}${conflicts}${earlier}
+      <p class="day-empty">${ahead ? 'nothing on the calendar tomorrow.' : v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}${stale}`;
   }
   if (v.tomorrow.length) {
     list += `<li class="ev-label">tomorrow</li>${v.tomorrow.slice(0, 4).map((e, i) => eventRow(view, e, !v.upcoming.length && i === 0, notes, extra)).join('')}`;
   }
-  return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}<ol class="timeline">${list}</ol>${errNote}${stale}`;
+  return `${head(rightLabel)}${chips}${conflicts}${earlier}<ol class="timeline">${list}</ol>${errNote}${stale}`;
 }
 
 // ---------- waiting on you (gmail) ----------
@@ -333,6 +416,7 @@ export function weekHTML(view) {
     const p = x.d.precipProbMax ?? 0;
     const name = i === 0 ? 'Today' : cap(dowShort(x.date));
     const tagText = x.tag ? (x.info.flag === 'depart' ? `→ ${x.tag}` : x.tag) : '';
+    const park = view.trip && view.trip.parkTags[x.date];
     return `<li class="wrow${x.away ? ' away' : ''}">
       <div class="wday"><span class="wname">${name}</span><span class="wdate">${esc(fmtMonthDay(x.date))}</span>${tagText ? `<span class="wtag">${esc(tagText)}</span>` : ''}</div>
       <span class="wicon">${weatherIcon(x.d.code, 1, { size: 30 })}</span>
@@ -340,6 +424,7 @@ export function weekHTML(view) {
       <span class="wlo">${deg(lo)}</span>
       <span class="wbar" aria-hidden="true"><span class="wfill" style="${fill}"></span></span>
       <span class="whi">${deg(hi)}</span>
+      ${park ? `<p class="wpark">${icon('ferris', { size: 13 })}<span>${esc(park)}</span></p>` : ''}
       ${notes.get(x.date) ? `<p class="wnote${fade}">${prose(notes.get(x.date))}</p>` : ''}
     </li>`;
   }).join('');

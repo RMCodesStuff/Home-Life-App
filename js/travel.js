@@ -96,6 +96,23 @@ export function buildResult(trips) {
 
 export const EMPTY_TRAVEL = buildResult([]);
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** A trip typed in settings, as a trip object (or null when incomplete). Same id format as detected trips. */
+export function manualTrip(m) {
+  if (!m || !m.city || !Number.isFinite(m.lat) || !Number.isFinite(m.lon) || !ISO_DATE.test(m.departDate || '') || !ISO_DATE.test(m.returnDate || '')) return null;
+  if (m.returnDate < m.departDate) return null;
+  return { ...mkTrip({ city: m.city, region: m.region || '', lat: m.lat, lon: m.lon }, m.departDate, m.returnDate, m.returnDate > m.departDate), manual: true };
+}
+
+/** Adds the manual trip to detected trips (or to none). Detected trips whose dates overlap it give way to it. Idempotent. */
+export function withManualTrip(result, manual) {
+  const trips = ((result && result.trips) || []).filter((t) => !t.manual);
+  const mt = manualTrip(manual);
+  if (!mt) return result && result.trips && result.trips.some((t) => t.manual) ? buildResult(trips) : result;
+  const kept = trips.filter((t) => t.returnDate < mt.departDate || t.departDate > mt.returnDate);
+  return buildResult([...kept, mt].sort((a, b) => a.departDate.localeCompare(b.departDate)));
+}
+
 /** The lowercase travel line shown under the hero's date row. */
 export function travelLine(travel, today) {
   if (!travel) return null;

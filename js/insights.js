@@ -220,7 +220,7 @@ function nightWord(lowF) {
   return lowF >= 65 ? 'warm' : lowF >= 50 ? 'mild' : lowF >= 35 ? 'cool' : 'cold';
 }
 
-function bucket(v) {
+export function bucket(v) {
   const dec = Math.floor(v / 10) * 10; const rem = v - dec;
   return `${rem <= 3 ? 'low' : rem <= 6 ? 'mid' : 'high'} ${dec}s`;
 }
@@ -298,7 +298,8 @@ function outlook(ctx) {
   return `*${[...parts, notable].join(', ')}.*`;
 }
 
-export function narrative(ctx) {
+/** `opener` starts the first sentence ("about 43 & clear at 7"); tomorrow's edition uses "starts around". */
+export function narrative(ctx, { opener = 'about' } = {}) {
   const m = ctx.model;
   const c = m.current;
   const rem = remaining(ctx);
@@ -306,7 +307,7 @@ export function narrative(ctx) {
   const sky = skyWord(c.code ?? 0, c.isDay ?? 1).word;
   const out = [];
   if (c.temp != null) {
-    let s = `about ${r(c.temp)} & ${sky} at ${nowHr >= 5 && nowHr < 18 ? fmtHourPlain(nowHr) : fmtClock(nowHr)}`;
+    let s = `${opener} ${r(c.temp)} & ${sky} at ${nowHr >= 5 && nowHr < 18 ? fmtHourPlain(nowHr) : fmtClock(nowHr)}`;
     if (c.feels != null && Math.abs(dF(toF(c.feels, ctx.units) - toF(c.temp, ctx.units), ctx.units)) > 2.01 && Math.abs(c.feels - c.temp) > (ctx.units === 'metric' ? 1 : 2)) s += `, feels ${r(c.feels)}`;
     out.push(`${s}.`);
   }

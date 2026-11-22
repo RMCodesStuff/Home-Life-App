@@ -112,6 +112,18 @@ export function makeGeocoder({ maxUncached = 12 } = {}) {
   };
 }
 
+/** Cache-only lookup (never touches the network): what makeGeocoder stored for this text, with the same comma fallback. */
+export function cachedGeocode(text) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  let r = getJSON(geoKey(t));
+  if (r === null && t.includes(',')) {
+    const rest = t.split(',').slice(1).join(',').trim();
+    if (rest) r = getJSON(geoKey(rest));
+  }
+  return r || null;
+}
+
 export async function reverseGeocode(lat, lon) {
   try {
     const j = await nominatimQueue(() => getJson(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=jsonv2&zoom=10`));
