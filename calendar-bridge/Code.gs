@@ -59,9 +59,11 @@
  * Version: New version -> Deploy. Until approved, briefing and birthdays report
  * an error and everything else keeps working.
  *
- * Also enable the People API for the script's Google Cloud project if birthdays
- * reports "people http 403": Project Settings -> Google Cloud Platform project
- * -> enable "People API" (default projects usually allow it already).
+ * Birthdays use the People API. If birthdays reports "people api is off for
+ * this script", turn it on once: in the editor, Services (+) -> People API ->
+ * Add. That enables the API for the script's project; the editor also adds a
+ * "dependencies" block to appsscript.json, which is fine to keep (pasting this
+ * manifest again later removes it, and the API stays on).
  *
  * The rundown (optional): create a folder named exactly "Home Life" in My Drive.
  * The daily Claude run saves home-life-briefing-YYYY-MM-DD.json there. The
@@ -120,6 +122,7 @@ const PARK_WINDOW_DAYS = 3;
 const MAX_PARK_DAYS = 6;
 const MAX_SHOWS = 6;
 const MAX_WAITS = 6;
+const NAMESAKE_UNKNOWN_GAP_MIN = 360;
 const TRIP_CACHE_SECONDS = 3 * 3600;
 const TRIP_MIN_MILES = 25;
 const TRIP_DEPART_HOUR = 8;
@@ -127,6 +130,7 @@ const BIRTHDAY_DAYS = 21;
 const BIRTHDAY_PAGES = 3;
 const BIRTHDAY_CACHE_SECONDS = 12 * 3600;
 const CACHE_CHUNK = 30000;
+const CACHE_MAX_SECONDS = 21600; // CacheService keeps values at most 6 hours; longer asks are clamped
 
 const WAITING_QUERY = 'in:inbox newer_than:10d -category:promotions -category:social -category:forums -from:me';
 const PACKAGE_QUERY = 'newer_than:7d (subject:("out for delivery" OR "arriving today" OR "arriving tomorrow" OR delivered OR "has shipped" OR "on its way" OR "on the way"))';
@@ -361,7 +365,7 @@ function cacheRead_(cache, key) {
 }
 function cacheWrite_(cache, key, value, seconds) {
   if (!cache) return;
-  try { cache.put(key, JSON.stringify(value === undefined ? null : value), seconds); } catch (err) { /* too big or unavailable */ }
+  try { cache.put(key, JSON.stringify(value === undefined ? null : value), Math.min(seconds, CACHE_MAX_SECONDS)); } catch (err) { /* too big or unavailable */ }
 }
 
 /** Like cacheWrite_ but splits values over the 100 KB per-key limit into chunks. */
@@ -370,9 +374,10 @@ function cacheWriteBig_(cache, key, value, seconds) {
   const raw = JSON.stringify(value === undefined ? null : value);
   if (raw.length <= CACHE_CHUNK) { cacheWrite_(cache, key, value, seconds); return; }
   const n = Math.ceil(raw.length / CACHE_CHUNK);
+  const ttl = Math.min(seconds, CACHE_MAX_SECONDS);
   try {
-    for (let i = 0; i < n; i++) cache.put(key + ':' + i, raw.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK), seconds);
-    cache.put(key, JSON.stringify({ chunked: n }), seconds);
+    for (let i = 0; i < n; i++) cache.put(key + ':' + i, raw.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK), ttl);
+    cache.put(key, JSON.stringify({ chunked: n }), ttl);
   } catch (err) { /* unavailable */ }
 }
 function cacheReadBig_(cache, key) {
@@ -867,18 +872,23 @@ function pickBriefingName_(names, today) {
 /** Reads the newest briefing file's text from the "Home Life" folder(s). Returns {name, date, text} or null. */
 function readBriefingFile_(today) {
   const files = {};
+  const trashed = function (x) { try { return typeof x.isTrashed === 'function' && x.isTrashed(); } catch (err) { return false; } };
+  const updated = function (x) { try { return typeof x.getLastUpdated === 'function' ? x.getLastUpdated().getTime() : 0; } catch (err) { return 0; } };
   const folders = DriveApp.getFoldersByName(BRIEFING_FOLDER);
   while (folders.hasNext()) {
-    const it = folders.next().getFiles();
+    const folder = folders.next();
+    if (trashed(folder)) continue;
+    const it = folder.getFiles();
     while (it.hasNext()) {
       const f = it.next();
       const name = f.getName();
-      if (BRIEFING_FILE_RE.test(name)) (files[name] = files[name] || []).push(f);
+      if (BRIEFING_FILE_RE.test(name) && !trashed(f)) (files[name] = files[name] || []).push(f);
     }
   }
   const pick = pickBriefingName_(Object.keys(files), today);
   if (!pick) return null;
-  const file = files[pick.name][0];
+  // Drive allows duplicate names (a re-run the same day): the newest copy wins.
+  const file = files[pick.name].reduce(function (a, b) { return updated(b) > updated(a) ? b : a; });
   return { name: pick.name, date: pick.date, text: file.getBlob().getDataAsString('UTF-8') };
 }
 
@@ -913,25 +923,75 @@ function parkTokens_(s) {
   });
 }
 
+// Travel and lodging words. An event that only loosely names a park ("Drive to
+// Disneyland", "Disneyland Hotel") is not a park day; one with the full park name
+// ("Event at Disneyland Park") always is.
+const PARK_TRAVEL_RE = /\b(hotels?|inn|motel|lodge|lodging|suites?|airbnb|vrbo|check ?in|check ?out|flights?|airport|drive|driving|leave|depart|departure|return|travel|pack|packing)\b/;
+
+/** Lowercase words separated by single spaces, padded: " event at disneyland park ". */
+function parkPhrase_(s) {
+  return ' ' + String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+}
+
 /**
  * Parks named by an event (title + location). A park matches when every token of
- * its name appears among the text's tokens. When one matched park's tokens are a
- * strict subset of another's, only the more specific one is kept.
+ * its name appears among the text's tokens (a weak match is skipped when the text
+ * reads like travel or lodging, unless the full park name appears). When one
+ * matched park's tokens are a strict subset of another's, only the more specific
+ * one is kept. Parks with the same name in different destinations ("Disneyland
+ * Park" in Anaheim and Paris) are narrowed by destination words in the text
+ * ("paris", "resort"); any that remain tied are all returned, next to each other.
  */
 function matchParks_(text, parks) {
   const have = {};
   parkTokens_(text).forEach(function (t) { have[t] = true; });
+  const phrase = parkPhrase_(text);
+  const travel = PARK_TRAVEL_RE.test(phrase);
   const hits = [];
   (parks || []).forEach(function (p) {
     const toks = parkTokens_(p && p.name);
     if (!toks.length || !p.id) return;
-    if (toks.every(function (t) { return have[t]; })) hits.push({ park: p, toks: toks });
+    if (!toks.every(function (t) { return have[t]; })) return;
+    if (travel && phrase.indexOf(parkPhrase_(p.name)) < 0) return;
+    const destScore = parkTokens_(p.dest).filter(function (t) { return toks.indexOf(t) < 0 && have[t]; }).length;
+    hits.push({ park: p, toks: toks, key: toks.join(' '), destScore: destScore });
   });
   return hits.filter(function (h) {
     return !hits.some(function (o) {
-      return o !== h && o.toks.length > h.toks.length && h.toks.every(function (t) { return o.toks.indexOf(t) >= 0; });
+      if (o === h) return false;
+      if (o.key === h.key) return o.destScore > h.destScore;
+      return o.toks.length > h.toks.length && h.toks.every(function (t) { return o.toks.indexOf(t) >= 0; });
     });
   }).map(function (h) { return h.park; });
+}
+
+/** UTC offset in minutes of a time zone at an instant, or null. */
+function zoneOffsetMin_(zone, ms) {
+  if (!zone) return null;
+  try {
+    const s = Utilities.formatDate(new Date(ms), zone, "yyyy-MM-dd'T'HH:mm:ssXXX");
+    if (/Z$/.test(s)) return 0;
+    const m = /([+-])(\d{2}):(\d{2})$/.exec(s);
+    return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : null;
+  } catch (err) { return null; }
+}
+
+/**
+ * Among same-named parks, the one whose time zone is closest to the script's. A park
+ * whose zone is unknown (its schedule failed) counts as 6 hours away, so it beats a
+ * park on another continent: better no data that day than Paris hours in Anaheim.
+ * Ties keep list order.
+ */
+function pickNamesake_(candidates, zoneOf, tz, ms) {
+  const home = zoneOffsetMin_(tz, ms);
+  let best = null;
+  let bestGap = Infinity;
+  (candidates || []).forEach(function (p) {
+    const off = zoneOffsetMin_(zoneOf(p.id), ms);
+    const gap = off === null || home === null ? NAMESAKE_UNKNOWN_GAP_MIN : Math.abs(off - home);
+    if (!best || gap < bestGap) { best = p; bestGap = gap; }
+  });
+  return best;
 }
 
 /** Dates (yyyy-MM-dd) of an event that fall inside the window set. */
@@ -950,7 +1010,10 @@ function eventDatesInWindow_(ev, windowDates) {
   return out;
 }
 
-/** Unique {date, park} pairs from events, soonest first, capped. */
+/**
+ * Unique {date, park, alts} entries from events, soonest first, capped. `alts` holds
+ * every same-named candidate (usually just `park`); parksFeature_ picks among them.
+ */
 function parkDaysFromEvents_(events, parks, windowDates) {
   const seen = {};
   const out = [];
@@ -958,12 +1021,22 @@ function parkDaysFromEvents_(events, parks, windowDates) {
     const dates = eventDatesInWindow_(ev, windowDates);
     if (!dates.length) return;
     const text = String(ev.title || '') + ' ' + String(ev.location || '');
+    const groups = {};
+    const order = [];
     matchParks_(text, parks).forEach(function (p) {
+      const key = parkTokens_(p.name).join(' ');
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(p);
+    });
+    order.forEach(function (key) {
       dates.forEach(function (date) {
-        const k = p.id + '|' + date;
-        if (seen[k]) return;
-        seen[k] = true;
-        out.push({ date: date, park: p });
+        const k = key + '|' + date;
+        if (seen[k]) {
+          if (groups[key].length < seen[k].alts.length) { seen[k].alts = groups[key]; seen[k].park = groups[key][0]; }
+          return;
+        }
+        seen[k] = { date: date, park: groups[key][0], alts: groups[key] };
+        out.push(seen[k]);
       });
     });
   });
@@ -978,7 +1051,7 @@ function parksGet_(path) {
   return JSON.parse(res.getContentText());
 }
 
-/** Flat list of {id, name} parks from the destinations list, cached 24 h. */
+/** Flat list of {id, name, dest} parks from the destinations list, cached (24 h asked, 6 h is the cache's limit). */
 function loadParkList_(cache) {
   const hit = cacheReadBig_(cache, 'hl-parks-dest-v3');
   if (hit) return hit;
@@ -986,7 +1059,7 @@ function loadParkList_(cache) {
   const out = [];
   ((j && j.destinations) || []).forEach(function (d) {
     ((d && d.parks) || []).forEach(function (p) {
-      if (p && p.id && p.name) out.push({ id: String(p.id), name: String(p.name) });
+      if (p && p.id && p.name) out.push({ id: String(p.id), name: String(p.name), dest: String((d && d.name) || '') });
     });
   });
   if (out.length) cacheWriteBig_(cache, 'hl-parks-dest-v3', out, DEST_CACHE_SECONDS);
@@ -1097,30 +1170,43 @@ function parksFeature_(events, nowMs, tz) {
   try { list = loadParkList_(cache); } catch (err) { return { ok: false, error: shortError_(err) }; }
   const pairs = parkDaysFromEvents_(candidates, list, windowDates);
 
+  // Each park's schedule and live data are fetched at most once per request (and cached).
+  const schedules = {};
+  const lives = {};
+  const scheduleFor = function (id) {
+    if (!(id in schedules)) { try { schedules[id] = loadSchedule_(cache, id); } catch (err) { schedules[id] = null; } }
+    return schedules[id];
+  };
+  const liveFor = function (id) {
+    if (!(id in lives)) { try { lives[id] = loadLive_(cache, id); } catch (err) { lives[id] = null; } }
+    return lives[id];
+  };
+  const zoneOf = function (id) { const sc = scheduleFor(id); return sc && sc.timezone; };
+
   const days = [];
   let failures = 0;
-  const bundles = {};
+  const used = {};
   pairs.forEach(function (pair) {
-    const id = pair.park.id;
-    if (!bundles[id]) {
-      const b = { schedule: null, live: null };
-      try { b.schedule = loadSchedule_(cache, id); } catch (err) { b.scheduleErr = true; }
-      try { b.live = loadLive_(cache, id); } catch (err) { b.liveErr = true; }
-      bundles[id] = b;
-    }
-    const b = bundles[id];
-    if (b.scheduleErr && b.liveErr) { failures++; return; }
-    const zone = (b.schedule && b.schedule.timezone) || tz;
-    const hrs = b.schedule ? parkHours_(b.schedule.schedule, pair.date) : { hours: null, early: null };
+    const park = pair.alts && pair.alts.length > 1
+      ? pickNamesake_(pair.alts, zoneOf, tz, Date.parse(pair.date + 'T12:00:00Z'))
+      : pair.park;
+    const id = park.id;
+    if (used[id + '|' + pair.date]) return;
+    used[id + '|' + pair.date] = true;
+    const sched = scheduleFor(id);
+    const live = liveFor(id);
+    if (!sched && !live) { failures++; return; }
+    const zone = (sched && sched.timezone) || tz;
+    const hrs = sched ? parkHours_(sched.schedule, pair.date) : { hours: null, early: null };
     days.push({
       date: pair.date,
       parkId: id,
-      name: pair.park.name,
+      name: park.name,
       timezone: zone,
       hours: hrs.hours,
       early: hrs.early,
-      shows: b.live ? parkShows_(b.live, pair.date, zone, tz) : [],
-      waits: b.live && pair.date === today ? parkWaits_(b.live) : []
+      shows: live ? parkShows_(live, pair.date, zone, tz) : [],
+      waits: live && pair.date === today ? parkWaits_(live) : []
     });
   });
   if (!days.length && failures) return { ok: false, error: 'themeparks unavailable' };
@@ -1132,14 +1218,18 @@ function parksFeature_(events, nowMs, tz) {
 function tripDriveFeature_(tripParam, tripDate, from, nowMs, tz) {
   if (!ENABLE_TRIP_DRIVE) return { ok: false, error: 'disabled' };
   const trip = parseFromParam_(tripParam);
-  if (!trip || !/^\d{4}-\d{2}-\d{2}$/.test(String(tripDate || '')) || !from) return { ok: false, error: 'bad_params' };
+  const date = String(tripDate || '');
+  if (!trip || !/^\d{4}-\d{2}-\d{2}$/.test(date) || dayShift_(date, 0) !== date) return { ok: false, error: 'bad_params' };
+  if (!from) return { ok: false, error: 'no_origin' }; // the app must send from= with trip=
+  tripDate = date;
   const cache = cacheOf_();
   const key = ('td|' + from.lat.toFixed(3) + ',' + from.lng.toFixed(3) + '|' + trip.lat.toFixed(3) + ',' + trip.lng.toFixed(3) + '|' + tripDate).slice(0, 240);
   const hit = cacheRead_(cache, key);
   if (hit) return hit;
 
   const wanted = Utilities.parseDate(tripDate + ' ' + ('0' + TRIP_DEPART_HOUR).slice(-2) + ':00', tz, 'yyyy-MM-dd HH:mm');
-  const depart = new Date(Math.max(wanted.getTime(), nowMs));
+  // Directions refuses departures in the past, so a past 8am becomes "a minute from now".
+  const depart = new Date(Math.max(wanted.getTime(), nowMs + 60000));
   let res;
   try {
     res = Maps.newDirectionFinder()
@@ -1175,7 +1265,10 @@ function peopleGet_(url) {
     muteHttpExceptions: true
   });
   const code = res.getResponseCode();
-  if (code === 401 || code === 403) throw new Error('contacts access not approved (redeploy and approve) or People API off');
+  if (code === 403 && /has not been used|is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(res.getContentText())) {
+    throw new Error('people api is off for this script (see setup notes)');
+  }
+  if (code === 401 || code === 403) throw new Error('contacts access not approved (redeploy and approve)');
   if (code !== 200) throw new Error('people http ' + code);
   return JSON.parse(res.getContentText());
 }

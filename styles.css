@@ -622,3 +622,67 @@ a.btn { text-decoration: none; }
 a.btn[aria-disabled="true"] { opacity: .55; pointer-events: none; }
 .subhead { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 14px; }
 .result:empty { min-height: 0; margin-top: 0; }
+
+/* ---------- v3: tomorrow's edition ---------- */
+.bigtemp .bt-label {
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: .08em;
+  color: var(--muted);
+  margin-left: .5em;
+}
+
+/* ---------- v3: trip prep & park day (top of the second card) ---------- */
+.top-rule { margin: 26px 0 24px; }
+.top-eyebrow { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; letter-spacing: .08em; }
+.top-eyebrow .icon { color: var(--accent); }
+.tp-line { margin-top: 12px; display: flex; align-items: flex-start; gap: 9px; font-size: 15px; line-height: 1.4; color: var(--ink-2); }
+.tp-line .icon { color: var(--muted); margin-top: 1px; }
+.tp-conflict { color: var(--ink); }
+.tp-conflict .icon { color: var(--accent); }
+.tripprep .card-head + .tp-line { margin-top: 16px; }
+.tp-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px 24px; margin-top: 8px; }
+@media (min-width: 480px) { .tp-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.tp-label { margin-top: 16px; color: var(--muted); font-size: 13px; letter-spacing: .08em; }
+.checks { margin-top: 6px; }
+.check { display: flex; align-items: flex-start; gap: 11px; padding: 7px 0; cursor: pointer; font-size: 16px; line-height: 1.35; color: var(--ink); }
+.check input {
+  appearance: none; -webkit-appearance: none; flex: none; margin: 1px 0 0; width: 19px; height: 19px;
+  border: 1.5px solid var(--muted); border-radius: 6px; background: transparent; position: relative; cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+}
+.check input:checked { background: var(--accent); border-color: var(--accent); }
+.check input:checked::after {
+  content: ""; position: absolute; left: 5.5px; top: 1.5px; width: 5px; height: 10px;
+  border: solid var(--card); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.check input:checked + span { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
+.check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.parkday .pd + .pd { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.pd-name { margin-top: 10px; font-family: var(--serif); font-weight: 400; font-size: 36px; line-height: 1.08; letter-spacing: -.01em; }
+.pd-hours { margin-top: 8px; color: var(--ink-2); font-size: 15px; font-variant-numeric: tabular-nums; }
+.pd-shows { margin-top: 12px; }
+.pd-shows li { padding: 8px 0; border-top: 1px solid var(--line); font-size: 16px; color: var(--ink); }
+.pd-shows li:first-child { border-top: 0; }
+.pd-waits { margin-top: 4px; }
+.pd-waits li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 16px; }
+.pd-waits li:first-child { border-top: 0; }
+.pw-name { color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.pw-min { flex: none; color: var(--accent); font-variant-numeric: tabular-nums; }
+.pd-credit { margin-top: 16px; color: var(--muted); font-size: 13px; letter-spacing: .02em; }
+.pd-credit a { color: var(--muted); text-underline-offset: 3px; }
+.yourday .tp-conflict { margin-top: 14px; }
+.wpark { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; color: var(--ink-2); font-size: 12px; letter-spacing: .03em; line-height: 1.25; overflow-wrap: anywhere; }
+.wpark .icon { color: var(--accent); flex: none; }
+
+/* ---------- v3: settings ---------- */
+.date-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sheet input[type="date"], .sheet input[type="time"] {
+  width: 100%; min-width: 0; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 11px 12px; font-size: 16px; color: var(--ink); outline: none;
+}
+.sheet input[type="time"] { width: auto; }
+.sheet input[type="date"]:focus, .sheet input[type="time"]:focus { border-color: var(--accent); }
+.sheet textarea.list { height: auto; font-family: var(--sans); font-size: 15px; line-height: 1.5; resize: vertical; }
+.set-sec .note.tight { margin-top: 4px; }

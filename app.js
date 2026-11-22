@@ -1,10 +1,13 @@
 // Home Life — entry module: boot, state, refresh loop, wiring.
-import { loadSettings, saveSettings, getJSON, setJSON, KEYS, wxKey, aqKey, alKey, pruneCaches } from './js/store.js';
-import { localNow, datePart } from './js/time.js';
+import { loadSettings, saveSettings, cloneSettings, getJSON, setJSON, remove, KEYS, wxKey, aqKey, alKey, pruneCaches } from './js/store.js';
+import { localNow, datePart, diffDays } from './js/time.js';
 import { fetchRawForecast, fetchAirQuality, fetchAlerts, normalize } from './js/weather.js';
-import { makeGeocoder } from './js/geo.js';
+import { makeGeocoder, cachedGeocode } from './js/geo.js';
 import { fetchCalendar, localizeEvents, describeCalendarError } from './js/calendar.js';
-import { detectTrips, travelLine, tripsToForecast, placeKey } from './js/travel.js';
+import { detectTrips, travelLine, tripsToForecast, placeKey, withManualTrip } from './js/travel.js';
+import { bridgeTrip, checksKey, setCheck } from './js/tripprep.js';
+import { eveningOn, tomorrowEdition } from './js/evening.js';
+import { composeTrip } from './js/compose.js';
 import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
 import { renderAll } from './js/render.js';
@@ -38,7 +41,9 @@ const state = {
   loading: false,
   alertOpen: false,
   lastRefresh: 0,
+  showToday: '', // the date on which "show today" was tapped during evening mode (per session)
 };
+try { state.showToday = sessionStorage.getItem('hl.showToday') || ''; } catch { /* ignore */ }
 
 // ---------- helpers ----------
 function applyTheme(theme) {
@@ -110,8 +115,24 @@ function buildView({ fade = false } = {}) {
   }
   const today = datePart(ctx.now);
   const info = state.travel ? state.travel.dayInfo(today) : null;
+  const evening = eveningOn(ctx.now, s.evening);
+  const tomorrow = evening && state.showToday !== today ? tomorrowEdition(ctx) : null;
+  const target = tomorrow ? tomorrow.date : today;
+  const bridge = state.cal && state.cal.bridge ? state.cal.bridge : null;
+  const h = s.home;
+  const trip = composeTrip(ctx, {
+    target, today, settings: s, bridge,
+    home: { lat: h.lat, lon: h.lon, name: h.name },
+    coordsFor: cachedGeocode,
+    checks: (id) => getJSON(checksKey(id)) || {},
+  });
   return {
     status: 'ready',
+    edition: tomorrow ? 'tomorrow' : 'today',
+    evening,
+    tomorrow,
+    target,
+    trip,
     settings: s,
     ctx,
     written,
@@ -125,9 +146,10 @@ function buildView({ fade = false } = {}) {
     calendarConnected: !!s.calendar.url,
     hasCalendarData: !!state.cal,
     calFetchedAt: state.cal && state.cal.fetchedAt,
-    bridge: state.cal && state.cal.bridge ? state.cal.bridge : null, // {version, features, inbox, oura}; null = not fetched yet
+    bridge, // {version, features, inbox, oura, parks, tripDrive, tripReq}; null = not fetched yet
     calErrorText: state.calError ? describeCalendarError(state.calError) : '',
-    travelLine: s.calendar.url && state.travel ? travelLine(state.travel, today) : (s.calendar.url && state.cal ? 'checking your calendar for trips…' : ''),
+    travelLine: (s.calendar.url || s.trip.manual) && state.travel ? travelLine(state.travel, today) : (s.calendar.url && state.cal ? 'checking your calendar for trips…' : ''),
+    travelLineTarget: tomorrow && state.travel ? travelLine(state.travel, target) : '',
     alertOpen: state.alertOpen,
   };
 }
@@ -179,11 +201,16 @@ async function loadTripModels(force) {
 }
 
 async function runTravel(maxUncached) {
-  if (!state.cal || !state.home) { state.travel = null; return; }
+  if (!state.home) { state.travel = null; return; }
   const h = state.settings.home;
-  try {
-    state.travel = await detectTrips({ events: state.cal.events, home: { lat: h.lat, lon: h.lon }, today: homeToday(), geocode: makeGeocoder({ maxUncached }) });
-  } catch { /* keep previous */ }
+  let detected = null;
+  if (state.cal) {
+    try {
+      detected = await detectTrips({ events: state.cal.events, home: { lat: h.lat, lon: h.lon }, today: homeToday(), geocode: makeGeocoder({ maxUncached }) });
+    } catch { detected = state.travel; } // keep previous
+  }
+  // a trip typed in settings works without the calendar, and wins over detected trips on the same dates
+  state.travel = withManualTrip(detected, state.settings.trip.manual);
 }
 
 function restoreFromCache() {
@@ -208,11 +235,12 @@ async function refresh({ manual = false } = {}) {
     state.lastRefresh = Date.now();
     render();
     const units = s.units;
+    const tripReq = state.home ? bridgeTrip(state.travel, homeToday()) : null; // a trip leaving within 2 days: ask for the drive
     const [wx, aq, al, cal] = await Promise.allSettled([
       fetchRawForecast(h.lat, h.lon, units),
       fetchAirQuality(h.lat, h.lon),
       fetchAlerts(h.lat, h.lon, h.countryCode),
-      s.calendar.url ? fetchCalendar(s.calendar.url, s.calendar.secret, 14, { from: primaryPlace() }) : Promise.resolve(null),
+      s.calendar.url ? fetchCalendar(s.calendar.url, s.calendar.secret, 14, { from: primaryPlace(), trip: tripReq }) : Promise.resolve(null),
     ]);
     if (units !== state.settings.units || h !== state.settings.home) return; // settings changed mid-flight
     let aqData;
@@ -233,8 +261,8 @@ async function refresh({ manual = false } = {}) {
     }
     if (cal.status === 'fulfilled') {
       if (cal.value) {
-        const { version, features, inbox, oura } = cal.value;
-        const bridge = { version, features, inbox, oura };
+        const { version, features, inbox, oura, parks, tripDrive } = cal.value;
+        const bridge = { version, features, inbox, oura, parks, tripDrive, tripReq: tripReq ? { id: tripReq.id, date: tripReq.date } : null };
         state.cal = { events: cal.value.events, fetchedAt: cal.value.fetchedAt, bridge };
         setJSON(KEYS.cal, { at: cal.value.fetchedAt, url: s.calendar.url, data: { events: cal.value.events, bridge } });
       }
@@ -257,10 +285,17 @@ async function refresh({ manual = false } = {}) {
   try { await refreshing; } finally { refreshing = null; state.loading = false; }
 }
 
+function eveningEditionNow() {
+  if (!state.home) return false;
+  const now = localNow(state.home.offset);
+  return eveningOn(now, state.settings.evening) && state.showToday !== datePart(now);
+}
+
 let aiInFlight = false;
 async function maybeAI() {
   const a = state.settings.ai;
   if (!a.enabled || !a.key || !state.home || aiInFlight) return;
+  if (eveningEditionNow()) return; // tomorrow's edition is written on-device only
   if (state.aiFailAt && Date.now() - state.aiFailAt < 30 * 60 * 1000) return; // don't retry a failure on every refresh
   const ctx = buildCtx();
   const fp = fingerprint(ctx);
@@ -286,11 +321,15 @@ async function maybeAI() {
 
 // ---------- settings ----------
 function onSettingsSaved(st, kind) {
-  state.settings = { ...st, calendar: { ...st.calendar }, ai: { ...st.ai }, show: { ...st.show } };
+  state.settings = cloneSettings(st);
   saveSettings(state.settings);
   switch (kind) {
     case 'theme': applyTheme(state.settings.theme); break;
-    case 'label': case 'show': render(); refreshStatus(); break;
+    case 'label': case 'show': case 'evening': case 'checklist': render(); refreshStatus(); break;
+    case 'trip':
+      // a manual trip changes travel, the forecasts to load and what the bridge is asked
+      runTravel(0).then(() => loadTripModels(true)).then(() => { render(); refreshStatus(); refresh(); });
+      break;
     case 'home':
     case 'units':
       state.home = null; state.travel = null; state.tripModels = {}; state.ai = null; state.wxError = null; state.wxStale = false;
@@ -300,7 +339,11 @@ function onSettingsSaved(st, kind) {
       refresh();
       break;
     case 'calendar':
-      if (!state.settings.calendar.url) { state.cal = null; state.travel = null; state.tripModels = {}; state.calError = null; render(); }
+      if (!state.settings.calendar.url) {
+        state.cal = null; state.calError = null;
+        runTravel(0).then(() => loadTripModels(true)).then(() => render()); // a manual trip survives without the calendar
+        render();
+      }
       else refresh();
       break;
     case 'ai':
@@ -320,7 +363,22 @@ function getStatus() {
     bridge: b ? { version: b.version, features: b.features } : null,
     oura: b ? { version: b.version, data: b.oura } : null,
     today: homeToday(),
+    trips: state.travel ? state.travel.trips.map((t) => ({ city: t.city, departDate: t.departDate, returnDate: t.returnDate, manual: !!t.manual })) : [],
   };
+}
+
+/** Ticks for trips that left more than 45 days ago are dropped. */
+function pruneTripChecks() {
+  try {
+    const today = datePart(localNow(0));
+    const drop = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      const m = /^hl\.trip\..*\|(\d{4}-\d{2}-\d{2})$/.exec(k || '');
+      if (m && diffDays(today, m[1]) > 45) drop.push(k);
+    }
+    drop.forEach((k) => remove(k));
+  } catch { /* ignore */ }
 }
 
 // ---------- service worker ----------
@@ -357,6 +415,19 @@ function wire() {
     if (a === 'open-settings') openSettings();
     else if (a === 'open-settings-calendar') openSettings('calendar');
     else if (a === 'refresh' || a === 'retry') refresh({ manual: true });
+    else if (a === 'show-today' || a === 'show-tomorrow') {
+      state.showToday = a === 'show-today' && state.home ? datePart(localNow(state.home.offset)) : '';
+      try { if (state.showToday) sessionStorage.setItem('hl.showToday', state.showToday); else sessionStorage.removeItem('hl.showToday'); } catch { /* ignore */ }
+      render();
+      if (!state.showToday) return;
+      maybeAI();
+    } else if (a === 'open-settings-trip') openSettings('trip');
+  });
+  document.addEventListener('change', (e) => {
+    const box = e.target.closest && e.target.closest('input[data-check]');
+    if (!box) return;
+    const key = checksKey(box.dataset.trip);
+    setJSON(key, setCheck(getJSON(key), box.dataset.check, box.checked));
   });
   document.addEventListener('toggle', (e) => {
     if (e.target.matches && e.target.matches('details.alert')) state.alertOpen = e.target.open;
@@ -377,11 +448,12 @@ function wire() {
 function boot() {
   applyTheme(state.settings.theme);
   wire();
-  initSettings(els.dialog, { getSettings: () => ({ ...state.settings, calendar: { ...state.settings.calendar }, ai: { ...state.settings.ai }, show: { ...state.settings.show } }), save: onSettingsSaved, getStatus });
+  initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus });
+  pruneTripChecks();
   if (!state.settings.home) { render(); registerSW(); return; }
   restoreFromCache();
   render();
-  if (state.home && state.cal) {
+  if (state.home && (state.cal || state.settings.trip.manual)) {
     // trips from cached geocodes only, then cached trip forecasts — instant
     runTravel(0).then(() => loadTripModels(false)).then(() => render()).finally(() => refresh());
   } else refresh();

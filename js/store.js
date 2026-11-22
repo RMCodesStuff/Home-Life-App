@@ -27,7 +27,11 @@ export const DEFAULT_SETTINGS = {
   units: 'imperial',
   theme: 'auto',
   calendar: { url: '', secret: '' },
-  show: { inbox: true, leaveBy: true, oura: true }, // app-side switches for the Google bridge's extras
+  show: { inbox: true, leaveBy: true, oura: true, tripPrep: true, parks: true }, // app-side switches for the extras
+  evening: { enabled: true, start: '18:00' }, // after `start`, the hero shows tomorrow's edition
+  // manual: a trip typed in settings ({city, region, lat, lon, departDate, returnDate}); works without the Google bridge.
+  // checklist: the "before you go" list in trip prep (empty = the defaults in tripprep.js).
+  trip: { manual: null, checklist: null },
   ai: { enabled: false, key: '', model: 'claude-opus-5-5' },
 };
 
@@ -48,6 +52,8 @@ export function loadSettings() {
     calendar: { ...DEFAULT_SETTINGS.calendar, ...(saved.calendar || {}) },
     show: { ...DEFAULT_SETTINGS.show, ...(saved.show || {}) },
     ai: { ...DEFAULT_SETTINGS.ai, ...(saved.ai || {}) },
+    evening: { ...DEFAULT_SETTINGS.evening, ...(saved.evening || {}) },
+    trip: { ...DEFAULT_SETTINGS.trip, ...(saved.trip || {}) },
   };
   if (!s.calendar.secret) {
     s.calendar.secret = makeSecret();
@@ -55,6 +61,8 @@ export function loadSettings() {
   }
   return s;
 }
+/** Deep copy (settings are plain JSON). */
+export const cloneSettings = (s) => JSON.parse(JSON.stringify(s));
 export function saveSettings(s) {
   return setJSON(KEYS.settings, s);
 }

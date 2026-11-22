@@ -46,6 +46,11 @@ export function addHours(local, n) {
   dt.setUTCHours(dt.getUTCHours() + n);
   return fromUtcDate(dt);
 }
+/** local "YYYY-MM-DDTHH:mm" plus n minutes (pure string math, n may be negative). */
+export function addMinutes(local, n) {
+  const [y, mo, d] = local.slice(0, 10).split('-').map(Number);
+  return fromUtcDate(new Date(Date.UTC(y, mo - 1, d, hourOf(local), minuteOf(local)) + Math.round(n) * 60000));
+}
 export const dowIndex = (date) => utc(date).getUTCDay();
 export const dowLong = (date) => DOW[dowIndex(date)];
 export const dowShort = (date) => DOW[dowIndex(date)].slice(0, 3);

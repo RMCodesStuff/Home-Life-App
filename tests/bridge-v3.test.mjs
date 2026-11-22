@@ -45,13 +45,13 @@ function load({ source = SECRET_SRC, calendars = [], fetchHandler = () => ({ cod
   const sandbox = {
     Session: { getScriptTimeZone: () => TZ },
     Utilities: { formatDate, getUuid: () => 'uuid', parseDate },
-    CacheService: { getScriptCache: () => (noCache ? null : { get: (k) => (cacheStore.has(k) ? cacheStore.get(k) : null), put: (k, v) => { if (String(v).length > 100000) throw new Error('too big'); cacheStore.set(k, v); }, remove: (k) => { cacheStore.delete(k); } }) },
+    CacheService: { getScriptCache: () => (noCache ? null : { get: (k) => (cacheStore.has(k) ? cacheStore.get(k) : null), put: (k, v, ttl) => { if (String(v).length > 100000) throw new Error('too big'); if (!(ttl >= 1 && ttl <= 21600)) throw new Error('Argument too large: expirationInSeconds'); cacheStore.set(k, v); }, remove: (k) => { cacheStore.delete(k); } }) },
     PropertiesService: { getScriptProperties: () => ({ getProperty: () => null, setProperties() {}, setProperty() {} }) },
     ScriptApp: { getOAuthToken: () => 'oauth-token-fake-1234567890abcdef', getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/X/exec' }) },
     ContentService: { MimeType: { JSON: 'json' }, createTextOutput: (text) => ({ text, setMimeType() { return this; } }) },
     HtmlService: { createHtmlOutput: (html) => ({ html, setTitle() { return this; } }) },
     CalendarApp: { getAllCalendars: () => calendars, GuestStatus: { NO: 'NO', YES: 'YES' } },
-    DriveApp: { getFoldersByName: (name) => iter(driveFolders.filter((f) => f.name === name).map((f) => ({ getFiles: () => iter(f.files) }))) },
+    DriveApp: { getFoldersByName: (name) => iter(driveFolders.filter((f) => f.name === name).map((f) => ({ getFiles: () => iter(f.files), isTrashed: () => !!f.trashed }))) },
     UrlFetchApp: {
       fetch: (url, opts) => { world.fetchLog.push({ url, opts }); return resp(fetchHandler(url, opts)); },
       fetchAll: (reqs) => reqs.map((r) => { world.fetchLog.push({ url: r.url, opts: r }); return resp(fetchHandler(r.url, r)); }),
@@ -136,16 +136,25 @@ test('briefing: bad JSON (and non-object JSON) report bad_json; Drive errors are
   assert.deepEqual(j(w.call('briefingFeature_', NOW, TZ)), { ok: false, error: 'bad_json' });
   w = load({ driveFolders: [folder([file('home-life-briefing-2026-11-22.json', '[1,2]')])] });
   assert.deepEqual(j(w.call('briefingFeature_', NOW, TZ)), { ok: false, error: 'bad_json' });
-  w = load();
-  w.ctx = null;
-  const src = SECRET_SRC;
-  const bad = load({ source: src });
   // Drive throwing (scope not approved yet)
-  const ctxless = load({ driveFolders: [{ name: 'Home Life', get files() { throw new Error('Authorization is required to perform that action.'); } }] });
-  const r = j(ctxless.call('briefingFeature_', NOW, TZ));
+  w = load({ driveFolders: [{ name: 'Home Life', get files() { throw new Error('Authorization is required to perform that action.'); } }] });
+  const r = j(w.call('briefingFeature_', NOW, TZ));
   assert.equal(r.ok, false);
   assert.match(r.error, /Authorization is required/);
-  void bad;
+});
+
+test('briefing: trashed files and folders are skipped; the newest copy of a duplicated name wins', () => {
+  const at = (name, content, updatedMs, trashed = false) => ({ ...file(name, content), isTrashed: () => trashed, getLastUpdated: () => new Date(updatedMs) });
+  const w = load({ driveFolders: [
+    folder([at('home-life-briefing-2026-11-22.json', { v: 1, push: 'old run' }, NOW - 7200000), at('home-life-briefing-2026-11-22.json', { v: 1, push: 'new run' }, NOW - 600000), at('home-life-briefing-2026-11-22.json', { v: 1, push: 'trashed' }, NOW, true)]),
+  ] });
+  assert.equal(j(w.call('briefingFeature_', NOW, TZ)).data.push, 'new run');
+  const onlyTrashed = load({ driveFolders: [folder([at('home-life-briefing-2026-11-22.json', { v: 1 }, NOW, true)])] });
+  assert.deepEqual(j(onlyTrashed.call('briefingFeature_', NOW, TZ)), { ok: false, error: 'not_found' });
+  const trashedFolder = load({ driveFolders: [{ name: 'Home Life', trashed: true, files: [file('home-life-briefing-2026-11-22.json', { v: 1 })] }, folder([file('home-life-briefing-2026-11-21.json', { v: 1, push: 'live folder' })])] });
+  const r = j(trashedFolder.call('briefingFeature_', NOW, TZ));
+  assert.equal(r.forDate, '2026-11-21'); // today's file sits in a trashed folder, so yesterday's live one is used
+  assert.equal(r.stale, true);
 });
 
 test('briefing: cached 10 minutes (Drive not read twice); stale flag follows the day, not the cache', () => {
@@ -397,6 +406,141 @@ test('parksFeature_: odd responses (missing fields) never throw', () => {
   assert.deepEqual([r.days[0].hours, r.days[0].early, r.days[0].shows, r.days[0].waits], [null, null, [], []]);
 });
 
+// ------------------------------------------------------------------ parks: the Disneyland trip (Nov 23 Disneyland Park, Nov 24 DCA)
+
+const PHX = 'America/Phoenix';
+const TRIP_DESTS = { destinations: [
+  { id: 'dlp-dest', name: 'Disneyland Paris', slug: 'disneylandparis', parks: [{ id: 'paris-dl', name: 'Disneyland Park' }, { id: 'paris-wds', name: 'Walt Disney Studios Park' }] },
+  { id: 'dlr-dest', name: 'Disneyland Resort', slug: 'disneylandresort', parks: [{ id: 'ana-dl', name: 'Disneyland Park' }, { id: 'ana-dca', name: 'Disney California Adventure Park' }] },
+  { id: 'hk', name: 'Hong Kong Disneyland Resort', parks: [{ id: 'hk-dl', name: 'Hong Kong Disneyland Park' }] },
+  { id: 'tdr', name: 'Tokyo Disney Resort', parks: [{ id: 'tdl', name: 'Tokyo Disneyland' }, { id: 'tds', name: 'Tokyo DisneySea' }] },
+  { id: 'wdw', name: 'Walt Disney World Resort', parks: [{ id: 'mk', name: 'Magic Kingdom Park' }] },
+] };
+const ZONES = { 'paris-dl': 'Europe/Paris', 'paris-wds': 'Europe/Paris', 'ana-dl': LA, 'ana-dca': LA, 'hk-dl': 'Asia/Hong_Kong', tdl: 'Asia/Tokyo', mk: 'America/New_York' };
+
+function tripWorld({ down = [] } = {}) {
+  const handler = (url) => {
+    if (url.endsWith('/destinations')) return { code: 200, body: TRIP_DESTS };
+    const m = /\/entity\/([^/]+)\/(schedule|live)$/.exec(url);
+    if (!m) return { code: 404, body: {} };
+    const [, id, kind] = m;
+    if (down.includes(id) || down.includes(`${id}/${kind}`)) return { code: 503, body: '' };
+    if (kind === 'schedule') {
+      const z = ZONES[id];
+      const off = z === LA ? '-08:00' : z === 'Europe/Paris' ? '+01:00' : '+00:00';
+      return { code: 200, body: { timezone: z, schedule: ['2026-11-22', '2026-11-23', '2026-11-24'].flatMap((d) => [
+        { date: d, type: 'OPERATING', openingTime: `${d}T08:00:00${off}`, closingTime: `${d}T23:00:00${off}` },
+        { date: d, type: 'EXTRA_HOURS', openingTime: `${d}T07:30:00${off}`, closingTime: `${d}T08:00:00${off}`, description: 'Early Entry' },
+      ]) } };
+    }
+    return { code: 200, body: { liveData: [{ name: `${id} ride`, entityType: 'ATTRACTION', status: 'OPERATING', queue: { STANDBY: { waitTime: 40 } } }] } };
+  };
+  return load({ fetchHandler: handler });
+}
+
+test('trip: the real event titles and locations match Disneyland Park (Anaheim) and DCA, not Paris', () => {
+  const w = tripWorld();
+  const events = evs([
+    { title: 'Drive to Disneyland', start: '2026-11-22T08:00:00-07:00' },
+    { title: 'Check in', location: 'Disneyland Hotel, 1150 Magic Way, Anaheim, CA', start: '2026-11-22T15:00:00-07:00' },
+    { title: 'Event at Disneyland Park', location: 'Disneyland Park', start: '2026-11-23T08:00:00-07:00' },
+    { title: 'Event at Disney California Adventure Park', location: 'Disney California Adventure Park', start: '2026-11-24T08:00:00-07:00' },
+  ]);
+  const r = j(w.call('parksFeature_', events, NOW, PHX));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.days.map((d) => [d.date, d.parkId, d.name, d.timezone]), [
+    ['2026-11-23', 'ana-dl', 'Disneyland Park', LA],
+    ['2026-11-24', 'ana-dca', 'Disney California Adventure Park', LA],
+  ]);
+  assert.deepEqual(r.days[0].hours, { open: '2026-11-23T08:00:00-08:00', close: '2026-11-23T23:00:00-08:00' });
+  assert.deepEqual(r.days[0].early, { open: '2026-11-23T07:30:00-08:00', close: '2026-11-23T08:00:00-08:00' });
+  assert.deepEqual(r.days[0].waits, []); // not today
+  // Paris was only asked for its schedule (to learn its time zone), never its live data
+  assert.ok(!w.fetchLog.some((c) => c.url.endsWith('/entity/paris-dl/live')));
+  assert.ok(!w.fetchLog.some((c) => /paris-wds|hk-dl|tdl|mk/.test(c.url)));
+  // on the 23rd itself the window still holds both days, and today's waits fill in
+  const r2 = j(w.call('parksFeature_', events, NOW + DAY, PHX));
+  assert.deepEqual(r2.days.map((d) => [d.date, d.parkId, d.waits.length]), [['2026-11-23', 'ana-dl', 1], ['2026-11-24', 'ana-dca', 0]]);
+});
+
+test('trip: title-only or location-only events match too; DCA never matches Disneyland Park', () => {
+  const w = tripWorld();
+  const parks = j(w.call('loadParkList_', null));
+  assert.deepEqual(parks.slice(0, 3), [
+    { id: 'paris-dl', name: 'Disneyland Park', dest: 'Disneyland Paris' },
+    { id: 'paris-wds', name: 'Walt Disney Studios Park', dest: 'Disneyland Paris' },
+    { id: 'ana-dl', name: 'Disneyland Park', dest: 'Disneyland Resort' },
+  ]);
+  const ids = (text) => j(w.call('matchParks_', text, parks)).map((p) => p.id);
+  assert.deepEqual(ids('Event at Disneyland Park'), ['paris-dl', 'ana-dl']); // namesakes, resolved later by time zone
+  assert.deepEqual(ids('Event at Disneyland Park Disneyland Park'), ['paris-dl', 'ana-dl']);
+  assert.deepEqual(ids('Event at Disney California Adventure Park'), ['ana-dca']);
+  assert.deepEqual(ids('Event at Disney California Adventure Park Disney California Adventure Park'), ['ana-dca']);
+  assert.deepEqual(ids('Disneyland Park, Disneyland Resort, Anaheim'), ['ana-dl']); // destination words narrow it
+  assert.deepEqual(ids('Disneyland Paris day 1'), ['paris-dl']);
+  assert.deepEqual(ids('Tokyo Disneyland'), ['tdl']);
+  assert.deepEqual(ids('Hong Kong Disneyland'), ['hk-dl']);
+  // travel and lodging read as not a park day unless the full park name is there
+  assert.deepEqual(ids('Drive to Disneyland'), []);
+  assert.deepEqual(ids('Disneyland Hotel check-in'), []);
+  assert.deepEqual(ids('Pack for Disneyland'), []);
+  assert.deepEqual(ids('Breakfast at Disneyland Hotel, then Disney California Adventure Park'), ['ana-dca']);
+  assert.deepEqual(ids('Leave early: Event at Disneyland Park'), ['paris-dl', 'ana-dl']);
+  assert.deepEqual(ids('Disneyland!'), ['paris-dl', 'ana-dl']);
+});
+
+test('pickNamesake_: nearest time zone wins; an unknown zone counts as 6 h away; ties keep list order', () => {
+  const w = load();
+  const cands = [{ id: 'paris-dl', name: 'Disneyland Park' }, { id: 'ana-dl', name: 'Disneyland Park' }];
+  const noon = Date.parse('2026-11-23T12:00:00Z');
+  const pick = (zones, tz) => j(w.call('pickNamesake_', cands, (id) => zones[id], tz, noon)).id;
+  assert.equal(pick(ZONES, PHX), 'ana-dl');
+  assert.equal(pick(ZONES, 'America/New_York'), 'ana-dl');
+  assert.equal(pick(ZONES, 'Europe/London'), 'paris-dl');
+  assert.equal(pick({ 'paris-dl': 'Europe/Paris' }, PHX), 'ana-dl'); // Anaheim unknown (6 h) still beats Paris (8 h) from Phoenix
+  assert.equal(pick({ 'ana-dl': LA }, PHX), 'ana-dl'); // Paris unknown
+  assert.equal(pick({ 'ana-dl': LA }, 'Europe/London'), 'paris-dl'); // from London an unknown Paris beats a known Anaheim
+  assert.equal(pick({}, PHX), 'paris-dl'); // nothing known: first listed
+});
+
+test('trip: outages never swap in Paris for Anaheim', () => {
+  const events = evs([{ title: 'Event at Disneyland Park', location: 'Disneyland Park', start: '2026-11-23T08:00:00-07:00' }]);
+  // Paris down: Anaheim as usual
+  const a = j(tripWorld({ down: ['paris-dl'] }).call('parksFeature_', events, NOW, PHX));
+  assert.deepEqual(a.days.map((d) => [d.parkId, d.timezone]), [['ana-dl', LA]]);
+  // Anaheim schedule down, live up: still Anaheim, hours unknown, waits only on the day itself
+  const b = j(tripWorld({ down: ['ana-dl/schedule'] }).call('parksFeature_', events, NOW + DAY, PHX));
+  assert.deepEqual(b.days.map((d) => [d.parkId, d.hours, d.waits.length]), [['ana-dl', null, 1]]);
+  // Anaheim fully down: no park day rather than Paris data
+  const c = j(tripWorld({ down: ['ana-dl'] }).call('parksFeature_', events, NOW, PHX));
+  assert.deepEqual(c, { ok: false, error: 'themeparks unavailable' });
+  // ...and other park days that work are kept
+  const both = evs([...events.map((e) => ({ title: e.title, location: e.location, start: e.start })), { title: 'Event at Disney California Adventure Park', start: '2026-11-24T08:00:00-07:00' }]);
+  const d = j(tripWorld({ down: ['ana-dl'] }).call('parksFeature_', both, NOW, PHX));
+  assert.deepEqual(d.days.map((x) => x.parkId), ['ana-dca']);
+});
+
+test('parkDaysFromEvents_: a more specific event narrows namesakes for the same day', () => {
+  const w = load();
+  const parks = TRIP_DESTS.destinations.flatMap((d) => d.parks.map((p) => ({ ...p, dest: d.name })));
+  const win = ['2026-11-22', '2026-11-23', '2026-11-24'];
+  const ev = (title) => ({ title, location: '', allDay: false, start: '2026-11-23T09:00:00-07:00' });
+  const days = j(w.call('parkDaysFromEvents_', [ev('Disneyland'), ev('Disneyland Park, Disneyland Resort')], parks, win));
+  assert.equal(days.length, 1);
+  assert.deepEqual(days[0].alts.map((p) => p.id), ['ana-dl']);
+  assert.equal(days[0].park.id, 'ana-dl');
+});
+
+test('caches never ask for more than 6 hours (CacheService limit), so 24 h and 12 h data still cache', () => {
+  const w = tripWorld();
+  const events = evs([{ title: 'Event at Disney California Adventure Park', start: '2026-11-24T08:00:00-07:00' }]);
+  w.call('parksFeature_', events, NOW, PHX);
+  const n = w.fetchLog.length;
+  w.call('parksFeature_', events, NOW + 60000, PHX);
+  assert.equal(w.fetchLog.length, n);
+  assert.ok(w.cacheStore.has('hl-parks-dest-v3'));
+});
+
 // ------------------------------------------------------------------ trip drive
 
 const route = (seconds, meters, summary = 'I-10 W', traffic = true) => ({ routes: [{ summary, legs: [{ duration: { value: seconds - 600 }, ...(traffic ? { duration_in_traffic: { value: seconds } } : {}), distance: { value: meters } }] }] });
@@ -405,7 +549,7 @@ const FROM = { lat: 33.4484, lng: -112.074 };
 test('tripDrive: builds minutes, miles, summary and an 8am departAt in the script zone; uses traffic duration', () => {
   const w = load({ directions: () => route(20520, 599400) });
   const r = j(w.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-23', FROM, NOW, TZ));
-  assert.deepEqual(r, { ok: true, minutes: 342, miles: 372.5, summary: 'I-10 W', departAt: '2026-11-23T08:00:00-07:00' });
+  assert.deepEqual(r, { ok: true, minutes: 342, miles: 372.4, summary: 'I-10 W', departAt: '2026-11-23T08:00:00-07:00' });
   assert.equal(w.mapsLog.length, 1);
   assert.deepEqual(w.mapsLog[0].origin, [33.4484, -112.074]);
   assert.deepEqual(w.mapsLog[0].dest, [33.8121, -117.919]);
@@ -414,19 +558,20 @@ test('tripDrive: builds minutes, miles, summary and an 8am departAt in the scrip
   const w2 = load({ directions: () => route(20520, 599400, 'I-10 W', false) });
   assert.equal(j(w2.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-23', FROM, NOW, TZ)).minutes, 332);
   // missing summary becomes an empty string
-  const w3 = load({ directions: () => route(20520, 599400, undefined) });
+  const w3 = load({ directions: () => route(20520, 599400, null) });
   assert.equal(j(w3.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-23', FROM, NOW, TZ)).summary, '');
 });
 
-test('tripDrive: departure in the past clamps to now', () => {
+test('tripDrive: an 8am departure already in the past becomes a minute from now', () => {
+  // at 7am, 8am today is still ahead
+  const early = load({ directions: () => route(20520, 599400) });
+  assert.equal(j(early.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-22', FROM, NOW, TZ)).departAt, '2026-11-22T08:00:00-07:00');
+  // at 9am it is not
+  const later = NOW + 2 * 3600000;
   const w = load({ directions: () => route(20520, 599400) });
-  const r = j(w.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-22', FROM, NOW, TZ)); // 8am today is already past at 9am
-  const later = NOW + 2 * 3600000; // 9am
-  const w2 = load({ directions: () => route(20520, 599400) });
-  const r2 = j(w2.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-22', FROM, later, TZ));
-  assert.equal(new Date(w2.mapsLog[0].depart).getTime(), later);
-  assert.equal(r2.departAt, '2026-11-22T09:00:00-07:00');
-  assert.equal(new Date(w.mapsLog[0].depart).getTime(), NOW + 0 * 1 > Date.parse('2026-11-22T15:00:00Z') ? NOW : Date.parse('2026-11-22T15:00:00Z'));
+  const r = j(w.call('tripDriveFeature_', '33.8121,-117.919', '2026-11-22', FROM, later, TZ));
+  assert.equal(new Date(w.mapsLog[0].depart).getTime(), later + 60000);
+  assert.equal(r.departAt, '2026-11-22T09:01:00-07:00');
   assert.equal(r.ok, true);
 });
 
@@ -450,7 +595,8 @@ test('tripDrive: bad params, no route and Maps errors give ok:false without thro
   const call = (trip, date, from) => j(w.call('tripDriveFeature_', trip, date, from, NOW, TZ));
   assert.deepEqual(call('nope', '2026-11-23', FROM), { ok: false, error: 'bad_params' });
   assert.deepEqual(call('33.8,-117.9', 'tomorrow', FROM), { ok: false, error: 'bad_params' });
-  assert.deepEqual(call('33.8,-117.9', '2026-11-23', null), { ok: false, error: 'bad_params' });
+  assert.deepEqual(call('33.8,-117.9', '2026-13-45', FROM), { ok: false, error: 'bad_params' });
+  assert.deepEqual(call('33.8,-117.9', '2026-11-23', null), { ok: false, error: 'no_origin' });
   assert.equal(w.mapsLog.length, 0);
   assert.deepEqual(call('33.8,-117.9', '2026-11-23', FROM), { ok: false, error: 'no_route' });
   const boom = load({ directions: () => { throw new Error('Service invoked too many times'); } });
@@ -526,8 +672,10 @@ test('birthdaysFeature_: a single page stops without a token; 403 reports the ap
   const w = load({ fetchHandler: () => ({ code: 200, body: { connections: [] } }) });
   assert.deepEqual(j(w.call('birthdaysFeature_', NOW, TZ)), { ok: true, upcoming: [] });
   assert.equal(w.fetchLog.length, 1);
-  const denied = load({ fetchHandler: () => ({ code: 403, body: '{}' }) });
-  assert.match(j(denied.call('birthdaysFeature_', NOW, TZ)).error, /contacts access not approved/);
+  const denied = load({ fetchHandler: () => ({ code: 403, body: { error: { code: 403, message: 'Request had insufficient authentication scopes.', status: 'PERMISSION_DENIED' } } }) });
+  assert.deepEqual(j(denied.call('birthdaysFeature_', NOW, TZ)), { ok: false, error: 'contacts access not approved (redeploy and approve)' });
+  const off = load({ fetchHandler: () => ({ code: 403, body: { error: { code: 403, message: 'People API has not been used in project 123456 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/people.googleapis.com/overview?project=123456 then retry.', status: 'PERMISSION_DENIED' } } }) });
+  assert.deepEqual(j(off.call('birthdaysFeature_', NOW, TZ)), { ok: false, error: 'people api is off for this script (see setup notes)' });
   const down = load({ fetchHandler: () => ({ code: 500, body: '{}' }) });
   assert.deepEqual(j(down.call('birthdaysFeature_', NOW, TZ)), { ok: false, error: 'people http 500' });
 });
@@ -597,7 +745,7 @@ test('doGet v3: a throw inside a feature function is contained by isolate_', () 
 
 test('doGet v3: wrong key is unauthorized with zero network, Drive and Maps activity', () => {
   let driveTouched = 0;
-  const w = load({ driveFolders: [], fetchHandler: () => ({ code: 200, body: '{}' }) });
+  const w = load({ driveFolders: [{ name: 'Home Life', get files() { driveTouched++; return []; } }], fetchHandler: () => ({ code: 200, body: '{}' }) });
   w.call('doGet', { parameter: { key: 'nope', trip: '33.8,-117.9', tripDate: '2026-11-23', from: '33.4,-112.0' } });
   const out = w.call('doGet', { parameter: { trip: '33.8,-117.9' } });
   assert.equal(out.text, '{"ok":false,"error":"unauthorized"}');

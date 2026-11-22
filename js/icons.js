@@ -56,6 +56,8 @@ const P = {
   box: '<path d="M12 3.5l8 4v9l-8 4-8-4v-9z"/><path d="M4 7.5l8 4 8-4M12 11.5v9"/>',
   'moon-sleep': '<path d="M17.8 14.6A7 7 0 1 1 9.4 6.2a5.6 5.6 0 0 0 8.4 8.4z"/><path d="M14.2 3.8h4l-4 4.2h4"/>',
   ring: '<circle cx="12" cy="14.2" r="6.2"/><circle cx="12" cy="14.2" r="3.7"/><path d="M9.7 6.4L12 3.4l2.3 3"/>',
+  suitcase: '<rect x="4" y="7.5" width="16" height="12" rx="2"/><path d="M9 7.5V5.6A1.6 1.6 0 0 1 10.6 4h2.8A1.6 1.6 0 0 1 15 5.6v1.9M8 7.5v12M16 7.5v12"/>',
+  ferris: '<circle cx="12" cy="10" r="6.2"/><path d="M12 3.8v12.4M5.8 10h12.4M7.6 5.6l8.8 8.8M16.4 5.6l-8.8 8.8M8.6 21L12 10l3.4 11M7 21h10"/>',
 };
 
 export function icon(name, { size = 24, className = '', title = '' } = {}) {

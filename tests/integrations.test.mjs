@@ -323,5 +323,7 @@ test('manifest time zone, settings defaults', () => {
   const out = JSON.parse(personalManifest(m, 'America/Denver'));
   assert.equal(out.timeZone, 'America/Denver');
   assert.ok(!personalManifest(m).includes('__TIME_ZONE__'));
-  assert.deepEqual(DEFAULT_SETTINGS.show, { inbox: true, leaveBy: true, oura: true });
+  assert.deepEqual(DEFAULT_SETTINGS.show, { inbox: true, leaveBy: true, oura: true, tripPrep: true, parks: true });
+  assert.deepEqual(DEFAULT_SETTINGS.evening, { enabled: true, start: '18:00' });
+  assert.deepEqual(DEFAULT_SETTINGS.trip, { manual: null, checklist: null });
 });
