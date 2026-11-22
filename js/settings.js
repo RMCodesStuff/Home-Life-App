@@ -6,6 +6,8 @@ import { fmtMonthDay, fmtDateRange } from './time.js';
 import { parseChecklist, checklistItems } from './tripprep.js';
 import { eveningStart } from './evening.js';
 import { extraMarkup, wireExtras, refreshExtras } from './settings2.js';
+import { setupMarkup, wireSetup } from './setupui.js';
+import { isValidKey, extractKeyFromUrl } from './devicesetup.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
 
@@ -77,7 +79,8 @@ const STEPS = `
   <li>Back in the editor, open <b>appsscript.json</b> and paste over it (<b>copy manifest</b> below).</li>
   <li>Click <b>Deploy → New deployment</b>, choose <b>Web app</b>, set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
   <li>Approve the Google permission prompt (read-only calendar, gmail, drive and contacts).</li>
-  <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it below, then tap <b>test connection</b>.</li>`;
+  <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it below, then tap <b>test connection</b>.</li>
+  <li>Already set up on another device? Use <b>Other devices → copy setup link</b> there.</li>`;
 
 const UPDATE_STEPS = `
   <li>Paste the new script and the manifest (<b>copy script</b> and <b>copy manifest</b> below).</li>
@@ -121,6 +124,12 @@ function markup(s) {
       <textarea id="cal-manifest" readonly hidden></textarea>
       <label for="cal-url">web app url</label>
       <input type="url" id="cal-url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(s.calendar.url || '')}" autocomplete="off" spellcheck="false">
+      <label for="cal-key">private key</label>
+      <div class="set-row key-row"><input type="password" id="cal-key" autocomplete="off" spellcheck="false" autocapitalize="off" value="${esc(s.calendar.secret || '')}" aria-describedby="cal-key-note">
+        <button class="btn" type="button" id="cal-key-show" aria-controls="cal-key">show</button>
+        <button class="btn" type="button" id="cal-key-copy">copy</button></div>
+      <p class="result" id="cal-key-result" role="status"></p>
+      <p class="note tight" id="cal-key-note">the same key must be in your Google script. Change it here only to match a script you already deployed.</p>
       <div class="set-row"><button class="btn" type="button" id="cal-test">test connection</button></div>
       <p class="result" id="cal-test-result" role="status"></p>
       <p class="subhead">show in the app</p>
@@ -130,6 +139,7 @@ function markup(s) {
       <label class="switch" for="show-birthdays"><input type="checkbox" id="show-birthdays"${s.show.birthdays !== false ? ' checked' : ''}> show birthdays</label>
       <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times, park hours and oura scores. keep them private.</p>
     </section>
+    ${setupMarkup()}
 
     <section class="set-sec" id="set-trip" aria-labelledby="set-trip-h">
       <h3 id="set-trip-h">Trips</h3>
@@ -195,6 +205,9 @@ function markup(s) {
   </div>`;
 }
 
+/** Rebuilds the sheet from the current settings (after a setup link replaced them). */
+export function rebuildSettings() { if (dialog && api) build(); }
+
 export function initSettings(el, options) {
   dialog = el;
   api = options;
@@ -228,12 +241,44 @@ function build() {
     try { await navigator.clipboard.writeText(url); b.textContent = 'copied'; } catch { $('oura-redirect').select(); b.textContent = 'press ctrl+c'; }
     setTimeout(() => { b.textContent = 'copy'; }, 2500);
   });
-  $('cal-url').addEventListener('change', (e) => {
-    const st = api.getSettings(); st.calendar.url = e.target.value.trim(); api.save(st, 'calendar'); refreshStatus();
+  // the private key: editable (to match a script deployed elsewhere), and picked up from a pasted link that has ?key= on it
+  const keyErr = 'the key needs 16 or more letters, numbers, - or _ (no spaces).';
+  const saveKey = (key, okText) => {
+    const st = api.getSettings();
+    if (!isValidKey(key)) { say('cal-key-result', keyErr, true); return false; }
+    if (st.calendar.secret !== key) { st.calendar.secret = key; api.save(st, 'calendar'); }
+    $('cal-key').value = key;
+    say('cal-key-result', okText);
+    return true;
+  };
+  $('cal-key').addEventListener('change', (e) => { saveKey(e.target.value.trim(), 'key saved. copy script now includes it.'); });
+  $('cal-key-show').addEventListener('click', (e) => {
+    const k = $('cal-key'); const show = k.type === 'password';
+    k.type = show ? 'text' : 'password'; e.currentTarget.textContent = show ? 'hide' : 'show';
   });
+  $('cal-key-copy').addEventListener('click', async () => {
+    const k = $('cal-key');
+    try { await navigator.clipboard.writeText(api.getSettings().calendar.secret); say('cal-key-result', 'key copied.'); } catch { k.type = 'text'; $('cal-key-show').textContent = 'hide'; k.focus(); k.select(); say('cal-key-result', 'press ctrl+c / ⌘c to copy the key.'); }
+  });
+  /** Saves the url field. A link with ?key= on it: the key moves into the key field and only the bare /exec url is kept. */
+  const commitUrl = () => {
+    const field = $('cal-url');
+    const found = extractKeyFromUrl(field.value);
+    if (found.found) {
+      if (!isValidKey(found.key)) { say('cal-key-result', `the link's key looks wrong. ${keyErr}`, true); return false; }
+      field.value = found.url;
+      saveKey(found.key, 'key saved from the link');
+    }
+    const st = api.getSettings(); st.calendar.url = field.value.trim(); api.save(st, 'calendar'); refreshStatus();
+    return true;
+  };
+  $('cal-url').addEventListener('change', commitUrl);
+  $('cal-url').addEventListener('paste', () => setTimeout(commitUrl, 0));
   $('cal-test').addEventListener('click', async () => {
-    const out = $('cal-test-result'); const url = $('cal-url').value.trim();
+    const out = $('cal-test-result');
     out.classList.remove('err');
+    if (extractKeyFromUrl($('cal-url').value).found && !commitUrl()) return;
+    const url = $('cal-url').value.trim();
     if (!/^https:\/\//.test(url)) { out.textContent = 'paste the web app url first (it starts with https:// and ends in /exec).'; out.classList.add('err'); return; }
     out.textContent = 'testing…';
     try {
@@ -282,6 +327,7 @@ function build() {
   toggle('show-tripprep', 'tripPrep'); toggle('show-parks', 'parks');
   toggle('show-rundown', 'rundown'); toggle('show-birthdays', 'birthdays'); toggle('show-speak', 'speak');
   wireExtras({ dialog, api, toggle });
+  wireSetup({ dialog, api });
   $('trip-checklist').addEventListener('change', (e) => {
     const st = api.getSettings(); st.trip.checklist = parseChecklist(e.target.value); api.save(st, 'checklist');
     e.target.value = checklistItems(st.trip.checklist).join('\n');

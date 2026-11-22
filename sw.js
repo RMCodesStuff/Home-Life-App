@@ -1,7 +1,7 @@
-/* Home Life service worker. Same-origin: stale-while-revalidate. Fonts and the
-   Anthropic SDK: cache-first. Everything else goes straight to the network, and the
+/* Home Life service worker. Same-origin: stale-while-revalidate. Fonts, the
+   Anthropic SDK and the QR library: cache-first. Everything else goes straight to the network, and the
    Firebase SDK (www.gstatic.com), OpenStreetMap and RainViewer are never intercepted. */
-const VERSION = 'home-life-v3';
+const VERSION = 'home-life-v4';
 const CORE = VERSION + '-core';
 const RUNTIME = VERSION + '-runtime';
 
@@ -12,7 +12,7 @@ const PRECACHE = [
   './js/icons.js', './js/render.js', './js/settings.js',
   './js/parks.js', './js/tripprep.js', './js/evening.js', './js/compose.js',
   './js/briefing.js', './js/calendars.js', './js/phoenix.js', './js/meals.js', './js/workout.js', './js/speech.js',
-  './js/connections.js', './js/fb.js', './js/settings2.js',
+  './js/connections.js', './js/fb.js', './js/settings2.js', './js/devicesetup.js', './js/setupui.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
   './icons/favicon.svg', './calendar-bridge/Code.gs', './calendar-bridge/appsscript.json'
 ];
@@ -24,7 +24,8 @@ const FONT_HOST = 'fonts.gstatic.com';
 const CACHE_FIRST_PREFIXES = [
   'https://fonts.googleapis.com/',
   'https://fonts.gstatic.com/',
-  'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@'
+  'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@',
+  'https://cdn.jsdelivr.net/npm/qrcode-generator@'
 ];
 
 self.addEventListener('install', (event) => {

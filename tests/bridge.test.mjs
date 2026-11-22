@@ -495,7 +495,7 @@ test('oura: configured but not connected yet', () => {
 });
 
 test('oura: an expired token refreshes first, and the rotated refresh token is stored', () => {
-  const props = { ...GOOD_PROPS, OURA_EXPIRES_AT: String(Date.now() - 1000) };
+  const props = { ...GOOD_PROPS, OURA_EXPIRES_AT: String(NOW - 1000) };
   const handler = (url, opts) => {
     if (url.endsWith('/oauth/token')) {
       assert.equal(opts.payload.grant_type, 'refresh_token');
@@ -510,7 +510,7 @@ test('oura: an expired token refreshes first, and the rotated refresh token is s
   assert.equal(out.ok, true);
   assert.equal(w.propStore.OURA_REFRESH_TOKEN, 'new-refresh-token-fake-abcdefghijklmnopqrstuv');
   assert.equal(w.propStore.OURA_ACCESS_TOKEN, 'new-access-token-fake-abcdefghijklmnopqrstuv');
-  assert.ok(Number(w.propStore.OURA_EXPIRES_AT) > Date.now());
+  assert.ok(Number(w.propStore.OURA_EXPIRES_AT) > NOW);
 });
 
 test('oura: a 401 refreshes once and retries once; a 403 after connect says membership required', () => {

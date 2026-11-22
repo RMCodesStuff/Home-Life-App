@@ -32,7 +32,7 @@ It is a static site with no build step and no backend. You can install it from C
 3. The workflow in `.github/workflows/pages.yml` deploys the repo root on every push to `main` (or run it by hand from the Actions tab).
 4. Your app is at `https://<your-user>.github.io/<repo-name>/`.
 
-GitHub Pages on a private repository needs a paid GitHub plan. Otherwise make the repository public. That is safe: nothing personal is stored in the repo. Your location, script link and API key live only in your browser.
+GitHub Pages on a private repository needs a paid GitHub plan. Otherwise make the repository public. That is safe: nothing personal is stored in the repo. Your location, script link and API key live only in your browser (a setup link, which you create yourself, carries them to your other devices).
 
 ## Install from Chrome
 
@@ -64,6 +64,19 @@ If the app says "update your google script", your deployment is an older version
 ### Turning pieces off
 
 In settings -> Google you can hide **waiting on you** and **leave-by times**, and in settings -> Oura **last night**. To stop the script itself from reading Gmail or Maps, set `ENABLE_GMAIL` or `ENABLE_LEAVE_BY` to `false` at the top of `Code.gs` and deploy a new version.
+
+## Using more than one device
+
+Each browser makes its own private key for the Google script, so a second device can't use a script you deployed from the first one until it has the same key. The easy way is a setup link.
+
+1. On the device that already works: settings -> **Other devices** -> **copy setup link** (or **show QR code** and scan it with the other phone's camera).
+2. Send the link to yourself or Kate and open it on the other device (installed app or browser). The app asks "Set up this device with your Home Life settings?" and lists what it will apply. **use these settings** replaces that device's settings with yours; **cancel** changes nothing. The address bar is cleared either way.
+
+The link carries your home, units and theme, evening settings, the Google web app url and private key, calendar labels, colors and filters, work calendars, a trip you added and your checklist, chores, power peak and watering, the on/off switches and workout preferences. It never carries cached data or the meal planner / rack timer sign-ins, and it leaves out your Claude API key unless you tick **include my claude api key**. The data sits in the part of the link after `#`, which browsers don't send to any server. It still contains your script key, so anyone who has the link can read what your script returns: send it only to yourself or Kate.
+
+### The private key field
+
+Settings -> Google -> **private key** shows the key this device uses (hidden until you tap **show**, with a **copy** button). It must be the same key as the one inside the deployed script. Change it only to match a script you already deployed elsewhere: paste that key (16 or more letters, numbers, `-` or `_`) and **copy script** will embed it from then on. If you paste a web app url that ends in `?key=...`, the key is moved into this field and only the `/exec` url is kept.
 
 ## Trips, trip prep and park days
 
@@ -107,7 +120,7 @@ The rack timer (same site, so same browser storage) leaves a small summary for t
 
 Settings -> **Calendars** lists the calendars your script sends. Give each a short label and one of five colors (your busiest calendar has no tag; others are tagged with their name, like `kate`), and switch off any calendar to hide it everywhere: Your day, trip detection, leave-by times, the workout window and tomorrow's edition.
 
-Kate's view is the same app on Kate's phone: she installs it, pastes the same Google link (or deploys her own script for her own calendars and inbox), picks her calendars in settings -> Calendars, and turns off what isn't hers (waiting on you, Oura, the workout, the rundown) with the switches in settings.
+Kate's view is the same app on Kate's phone: she installs it, opens the setup link you send her (see "Using more than one device"; or she deploys her own script for her own calendars and inbox), picks her calendars in settings -> Calendars, and turns off what isn't hers (waiting on you, Oura, the workout, the rundown) with the switches in settings.
 
 ## Phoenix home pack
 
@@ -154,7 +167,7 @@ The key is stored only in your browser and sent only to `api.anthropic.com`. Cla
 
 ## Privacy
 
-Everything is stored in your browser's localStorage: home, settings (including a trip you add, your checklist, calendar labels and chores), checklist ticks per trip, cached forecasts, calendar events, inbox, Oura, park, rundown and birthday results, today's and tomorrow's meals, the rack timer summary, geocoding results and your optional API key. Signing in to the meal planner or the rack timer keeps a Google sign-in for those Firebase projects in this browser; disconnect removes it. There is no server and no analytics. Network requests go only to the data sources above, your own Apps Script URL, and `api.anthropic.com` if you enable Claude.
+Everything is stored in your browser's localStorage: home, settings (including a trip you add, your checklist, calendar labels and chores), checklist ticks per trip, cached forecasts, calendar events, inbox, Oura, park, rundown and birthday results, today's and tomorrow's meals, the rack timer summary, geocoding results and your optional API key. A setup link built in settings -> Other devices contains your portable settings in its `#` fragment (never sent to a server); the QR code library comes from jsDelivr the first time settings opens. Signing in to the meal planner or the rack timer keeps a Google sign-in for those Firebase projects in this browser; disconnect removes it. There is no server and no analytics. Network requests go only to the data sources above, your own Apps Script URL, and `api.anthropic.com` if you enable Claude.
 
 The script returns event titles, times and locations; email senders, subjects and short snippets of up to 5 threads; package statuses; drive times (including the drive to a trip leaving soon, so the trip's coordinates are sent to the script); park hours, showtimes and waits for parks on your calendar; the morning rundown (its note, the money line with bills, budget and notable charges, and fantasy lines); upcoming birthdays (names and dates) from your contacts; and Oura scores. Anyone who holds both the web app URL and the key can read all of that, so keep both private. Nothing is stored outside your Google account and your browser. Oura tokens live only in the script's properties. If you enable Claude, it receives senders, reasons and subjects, but no snippets; it also gets the workout proposal, tonight's dinner, upcoming birthdays (first names), the rundown's note and a park day's hours and shows, never money amounts.
 

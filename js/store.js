@@ -56,9 +56,9 @@ export function makeSecret() {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export function loadSettings() {
-  const saved = getJSON(KEYS.settings) || {};
-  const s = {
+/** Fills a saved (or imported) settings object out to the full shape; unknown keys are kept, missing ones get defaults. */
+export function normalizeSettings(saved = {}) {
+  return {
     ...DEFAULT_SETTINGS,
     ...saved,
     calendar: { ...DEFAULT_SETTINGS.calendar, ...(saved.calendar || {}) },
@@ -74,6 +74,10 @@ export function loadSettings() {
     chores: Array.isArray(saved.chores) ? saved.chores : [],
     workout: { ...DEFAULT_SETTINGS.workout, ...(saved.workout || {}) },
   };
+}
+
+export function loadSettings() {
+  const s = normalizeSettings(getJSON(KEYS.settings) || {});
   if (!s.calendar.secret) {
     s.calendar.secret = makeSecret();
     saveSettings(s);

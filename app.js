@@ -19,7 +19,8 @@ import { relTime } from './js/time.js';
 import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
 import { renderAll, clockAt } from './js/render.js';
-import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker } from './js/settings.js';
+import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker, rebuildSettings } from './js/settings.js';
+import { offerSetupFromHash } from './js/setupui.js';
 
 const AI_MAX_AGE = 3 * 3600 * 1000;
 const STALE_MS = 10 * 60 * 1000;
@@ -526,6 +527,19 @@ function onSettingsSaved(st, kind) {
   }
 }
 
+/** "use these settings" on a setup link: the merged settings replace this device's, then everything reloads like a home change. */
+function applySetupSettings(merged) {
+  const inFlight = refreshing;
+  state.settings = cloneSettings(merged);
+  saveSettings(state.settings);
+  applyTheme(state.settings.theme);
+  state.cal = null; state.calError = null; state.ai = null; state.aiError = null; state.aiFailAt = 0;
+  rebuildSettings();
+  if (!state.settings.home) { state.home = null; state.travel = null; state.tripModels = {}; render(); return; }
+  onSettingsSaved(state.settings, 'home');
+  if (inFlight) inFlight.catch(() => {}).then(() => refresh());
+}
+
 /** After connecting or disconnecting an account in settings. */
 async function reloadSource(kind) {
   if (kind === 'meals-off') { state.meals = null; state.mealStatus = null; remove('hl.meals'); }
@@ -652,6 +666,9 @@ function boot() {
   wire();
   initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus, reload: reloadSource });
   pruneTripChecks();
+  const offerSetup = () => offerSetupFromHash({ getSettings: () => cloneSettings(state.settings), apply: applySetupSettings });
+  offerSetup();
+  window.addEventListener('hashchange', offerSetup); // a setup link opened while the app is already running
   if (!state.settings.home) { render(); registerSW(); return; }
   restoreFromCache();
   render();
