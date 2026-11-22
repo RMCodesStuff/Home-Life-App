@@ -18,9 +18,11 @@ import { readAloudText, toggleSpeech, canSpeak } from './js/speech.js';
 import { relTime } from './js/time.js';
 import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
-import { renderAll, clockAt } from './js/render.js';
+import { renderAll, renderPlanCard, clockAt } from './js/render.js';
 import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker, rebuildSettings } from './js/settings.js';
 import { offerSetupFromHash } from './js/setupui.js';
+import { loadPlan, savePlan, clearPlan, loadDone, saveDone, setDone, composePlan } from './js/plan.js';
+import { initPlanUI, initPlanSheet, openPlanSheet, offerPlanFromHash } from './js/planui.js';
 
 const AI_MAX_AGE = 3 * 3600 * 1000;
 const STALE_MS = 10 * 60 * 1000;
@@ -31,6 +33,7 @@ const els = {
   week: document.getElementById('week'),
   fine: document.getElementById('fine'),
   rundown: document.getElementById('rundown'),
+  plan: document.getElementById('plan'),
   dialog: document.getElementById('settings'),
   toast: document.getElementById('toast'),
 };
@@ -58,7 +61,11 @@ const state = {
   rackStatus: null,
   radar: null, // {at, frame}
   speaking: false,
+  plan: loadPlan(), // the trip plan (itinerary), this device only
+  planDone: {},
+  planWaits: [], // today's standby waits from the last full render
 };
+state.planDone = state.plan ? loadDone(state.plan.id) : {};
 try { state.showToday = sessionStorage.getItem('hl.showToday') || ''; } catch { /* ignore */ }
 
 // ---------- helpers ----------
@@ -124,10 +131,15 @@ function buildCtx() {
   };
 }
 
+/** The trip plan card's view model (null hides it). Times are the plan's own zone; `evening` = tomorrow's edition is showing. */
+function planView(evening) {
+  return composePlan(state.plan, { nowMs: Date.now(), evening, waits: state.planWaits, done: state.planDone });
+}
+
 function buildView({ fade = false } = {}) {
   const s = state.settings;
   if (!s.home) return { status: 'onboarding', settings: s };
-  if (!state.home) return { status: state.wxError ? 'error' : 'loading', settings: s, wxErrorText: state.wxError ? 'check your connection and try again.' : '' };
+  if (!state.home) return { status: state.wxError ? 'error' : 'loading', settings: s, plan: planView(false), wxErrorText: state.wxError ? 'check your connection and try again.' : '' };
   const ctx = buildCtx();
   const onDevice = writeAll(ctx);
   let written = onDevice;
@@ -162,8 +174,10 @@ function buildView({ fade = false } = {}) {
     radar = { grid: tileGrid(pl.lat, pl.lon, 7), frame: state.radar.frame, ago: state.radar.frame.time ? relTime(new Date(state.radar.frame.time * 1000).toISOString(), Date.now()) : '' };
   }
   written = { ...written, fine: fineWithHome(written.fine, homeFx.fine, today) };
+  state.planWaits = trip.park.filter((p) => p.date === today).flatMap((p) => p.waits);
   return {
     status: 'ready',
+    plan: planView(!!tomorrow),
     home: homeFx,
     radar,
     tags: tagMap(calendarList(state.cal ? state.cal.events : [], s.calendars)),
@@ -490,8 +504,30 @@ function speechText(view) {
     w.inbox_chip ? { label: 'inbox', text: w.inbox_chip } : null,
     ...extra.filter((c) => c.after !== 'leave'),
   ].filter(Boolean);
-  return readAloudText({ lead: w.headline_lead, accent: w.headline_accent, narrative: w.narrative, chips, note: h.rundown ? h.rundown.note : '' });
+  const planNext = view.plan && view.plan.mode === 'today' && view.plan.next ? `next on the plan: ${view.plan.next.title} at ${view.plan.next.clock}.` : '';
+  return readAloudText({ lead: w.headline_lead, accent: w.headline_accent, narrative: w.narrative, chips, note: [h.rundown ? h.rundown.note : '', planNext].filter(Boolean).join(' ') });
 }
+
+// ---------- trip plan ----------
+function renderPlanOnly() {
+  if (!state.settings.home) return;
+  renderPlanCard(planView(eveningEditionNow()), els.plan);
+}
+const planHost = {
+  getPlan: () => state.plan,
+  getDone: () => state.planDone,
+  setPlan(plan) {
+    state.plan = plan;
+    state.planDone = loadDone(plan.id);
+    savePlan(plan);
+    render();
+  },
+  removePlan() {
+    if (state.plan) clearPlan(state.plan.id);
+    state.plan = null; state.planDone = {};
+    render();
+  },
+};
 
 // ---------- settings ----------
 function onSettingsSaved(st, kind) {
@@ -641,11 +677,22 @@ function wire() {
       if (!state.showToday) return;
       maybeAI();
     } else if (a === 'open-settings-trip') openSettings('trip');
+    else if (a === 'open-plan') openPlanSheet();
     else if (a === 'speak') {
       toggleSpeech(speechText(buildView()), { onChange: (on) => { state.speaking = on; render(); } });
     }
   });
   document.addEventListener('change', (e) => {
+    const pbox = e.target.closest && e.target.closest('input[data-plan-item], input[data-plan-check]');
+    if (pbox && state.plan) {
+      const id = pbox.dataset.planItem || pbox.dataset.planCheck;
+      state.planDone = setDone(state.planDone, id, pbox.checked);
+      saveDone(state.plan.id, state.planDone);
+      // the same stop can be in the card and the whole-trip sheet: keep every copy in step
+      document.querySelectorAll('input[data-plan-item], input[data-plan-check]').forEach((n) => { if ((n.dataset.planItem || n.dataset.planCheck) === id) n.checked = pbox.checked; });
+      renderPlanOnly();
+      return;
+    }
     const box = e.target.closest && e.target.closest('input[data-check]');
     if (!box) return;
     const key = checksKey(box.dataset.trip);
@@ -663,6 +710,8 @@ function wire() {
   setInterval(() => { if (document.visibilityState === 'visible' && state.settings.home) refresh(); }, 15 * 60 * 1000);
   // keep "now" fresh (your day, current hour) between refreshes
   setInterval(() => { if (document.visibilityState === 'visible' && state.home && !els.dialog.open) render(); }, 5 * 60 * 1000);
+  // the plan card counts down in minutes, so it re-renders on its own between the full renders
+  setInterval(() => { if (document.visibilityState === 'visible' && state.plan && !els.plan.hidden && !els.dialog.open) renderPlanOnly(); }, 60 * 1000);
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); setInstallPrompt(e); });
   window.addEventListener('appinstalled', () => setInstallPrompt(null));
 }
@@ -672,6 +721,10 @@ function boot() {
   wire();
   initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus, reload: reloadSource });
   pruneTripChecks();
+  initPlanUI(planHost);
+  initPlanSheet();
+  offerPlanFromHash();
+  window.addEventListener('hashchange', offerPlanFromHash); // a plan link opened while the app is already running
   const offerSetup = () => offerSetupFromHash({ getSettings: () => cloneSettings(state.settings), apply: applySetupSettings });
   offerSetup();
   window.addEventListener('hashchange', offerSetup); // a setup link opened while the app is already running

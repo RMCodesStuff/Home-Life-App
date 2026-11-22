@@ -7,6 +7,7 @@ import { parseChecklist, checklistItems } from './tripprep.js';
 import { eveningStart } from './evening.js';
 import { extraMarkup, wireExtras, refreshExtras } from './settings2.js';
 import { setupMarkup, wireSetup } from './setupui.js';
+import { planSettingsMarkup, wirePlanSettings } from './planui.js';
 import { isValidKey, extractKeyFromUrl } from './devicesetup.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
@@ -140,6 +141,7 @@ function markup(s) {
       <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times, park hours and oura scores. keep them private.</p>
     </section>
     ${setupMarkup()}
+    ${planSettingsMarkup()}
 
     <section class="set-sec" id="set-trip" aria-labelledby="set-trip-h">
       <h3 id="set-trip-h">Trips</h3>
@@ -328,6 +330,7 @@ function build() {
   toggle('show-rundown', 'rundown'); toggle('show-birthdays', 'birthdays'); toggle('show-speak', 'speak');
   wireExtras({ dialog, api, toggle });
   wireSetup({ dialog, api });
+  wirePlanSettings({ dialog });
   $('trip-checklist').addEventListener('change', (e) => {
     const st = api.getSettings(); st.trip.checklist = parseChecklist(e.target.value); api.save(st, 'checklist');
     e.target.value = checklistItems(st.trip.checklist).join('\n');

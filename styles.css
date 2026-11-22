@@ -649,18 +649,18 @@ a.btn[aria-disabled="true"] { opacity: .55; pointer-events: none; }
 .tp-label { margin-top: 16px; color: var(--muted); font-size: 13px; letter-spacing: .08em; }
 .checks { margin-top: 6px; }
 .check { display: flex; align-items: flex-start; gap: 11px; padding: 7px 0; cursor: pointer; font-size: 16px; line-height: 1.35; color: var(--ink); }
-.check input {
+.check input, .plan-cb {
   appearance: none; -webkit-appearance: none; flex: none; margin: 1px 0 0; width: 19px; height: 19px;
   border: 1.5px solid var(--muted); border-radius: 6px; background: transparent; position: relative; cursor: pointer;
   transition: background-color .15s, border-color .15s;
 }
-.check input:checked { background: var(--accent); border-color: var(--accent); }
-.check input:checked::after {
+.check input:checked, .plan-cb:checked { background: var(--accent); border-color: var(--accent); }
+.check input:checked::after, .plan-cb:checked::after {
   content: ""; position: absolute; left: 5.5px; top: 1.5px; width: 5px; height: 10px;
   border: solid var(--card); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .check input:checked + span { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--line); }
-.check input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.check input:focus-visible, .plan-cb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .parkday .pd + .pd { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .pd-name { margin-top: 10px; font-family: var(--serif); font-weight: 400; font-size: 36px; line-height: 1.08; letter-spacing: -.01em; }
 .pd-hours { margin-top: 8px; color: var(--ink-2); font-size: 15px; font-variant-numeric: tabular-nums; }
@@ -808,3 +808,48 @@ a.btn[aria-disabled="true"] { opacity: .55; pointer-events: none; }
 .confirm-list li:first-child { border-top: 0; }
 .confirm-inner .note { color: var(--muted); font-size: 14px; line-height: 1.5; }
 .confirm-inner .set-row { margin-top: 18px; }
+
+/* ---------- trip plan ---------- */
+.plan .top-eyebrow { margin-bottom: 0; }
+.plan-title { margin-top: 10px; font-family: var(--serif); font-weight: 400; font-size: 32px; line-height: 1.1; letter-spacing: -.01em; }
+.plan-sub { margin-top: 6px; color: var(--ink-2); font-size: 15px; line-height: 1.4; }
+.plan-now { margin-top: 18px; padding: 16px 0 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.plan-kicker { color: var(--muted); font-size: 13px; letter-spacing: .08em; }
+.plan-kicker-next { margin-top: 14px; }
+.plan-in { color: var(--accent); font-variant-numeric: tabular-nums; }
+.plan-big { margin-top: 4px; font-family: var(--serif); font-size: 28px; line-height: 1.18; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.plan-bt { color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.plan-next { margin-top: 3px; font-family: var(--serif); font-size: 20px; line-height: 1.3; color: var(--ink-2); overflow-wrap: anywhere; }
+.plan-meta { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.plan-where { color: var(--muted); font-size: 14px; }
+.plan-chip { background: var(--card-2); color: var(--ink-2); border-radius: 999px; padding: 2px 9px; font-size: 12px; letter-spacing: .02em; }
+.plan-tag-reserved, .plan-tag-phone, .plan-tag-multipass, .plan-tag-switch { background: var(--accent-soft); color: var(--accent); }
+.plan-list { margin-top: 10px; }
+.plan-row { display: grid; grid-template-columns: 19px 56px minmax(0, 1fr); gap: 0 10px; align-items: start; padding: 12px 0; border-top: 1px solid var(--line); }
+.plan-list > .plan-row:first-child { border-top: 0; }
+.plan-row.is-now { background: var(--accent-soft); margin: 0 -10px; padding: 12px 10px; border-radius: 12px; border-top-color: transparent; }
+.plan-row .plan-cb { margin: 3px 0 0; }
+.plan-time { color: var(--ink-2); font-size: 14px; font-variant-numeric: tabular-nums; padding-top: 2px; white-space: nowrap; }
+.plan-rtitle { font-size: 16px; line-height: 1.35; color: var(--ink); overflow-wrap: anywhere; }
+.plan-note { margin-top: 4px; color: var(--muted); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.plan-meta .plan-where + .plan-chip, .plan-meta .plan-chip + .plan-chip { margin-left: 0; }
+.plan-family { margin-top: 6px; display: flex; align-items: flex-start; gap: 7px; color: var(--ink-2); font-size: 14px; line-height: 1.4; font-style: italic; }
+.plan-family .icon { flex: none; color: var(--accent); margin-top: 2px; }
+.plan-waits { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-wait { background: var(--card-2); border-radius: 999px; padding: 3px 10px; font-size: 13px; color: var(--ink-2); }
+.plan-wait b { color: var(--ink); font-weight: 500; white-space: nowrap; }
+.plan-cb:checked ~ .plan-time, .plan-cb:checked ~ .plan-body { opacity: .5; }
+.plan-cb:checked ~ .plan-body .plan-rtitle { text-decoration: line-through; text-decoration-color: var(--muted); }
+.plan-earlier { margin-top: 12px; }
+.plan-earlier summary { cursor: pointer; color: var(--muted); font-size: 13px; letter-spacing: .08em; padding: 6px 0; }
+.plan-more { margin-top: 6px; color: var(--muted); font-size: 14px; }
+.plan-foot { margin-top: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.plan-src { color: var(--muted); font-size: 14px; text-underline-offset: 3px; }
+.plan-sec { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.plan-sec h3 { font-family: var(--serif); font-weight: 400; font-size: 24px; line-height: 1.15; }
+.plan-intro { margin-top: 12px; color: var(--ink-2); font-size: 16px; line-height: 1.5; }
+.plan-tips { margin-top: 12px; padding-left: 18px; list-style: disc; color: var(--ink-2); font-size: 15px; line-height: 1.5; display: grid; gap: 4px; }
+.plan-heights { margin-top: 4px; }
+.plan-heights li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.plan-heights li:first-child { border-top: 0; }
+@media (max-width: 479px) { .plan-title { font-size: 28px; } .plan-big { font-size: 25px; } .plan-row { grid-template-columns: 19px 50px minmax(0, 1fr); } }
