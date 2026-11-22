@@ -376,11 +376,13 @@ async function refresh({ manual = false } = {}) {
     const units = s.units;
     const tripReq = state.home ? bridgeTrip(state.travel, homeToday()) : null; // a trip leaving within 2 days: ask for the drive
     const fromReq = primaryPlace();
-    const [wx, aq, al, cal] = await Promise.allSettled([
+    // The calendar script can take a minute on a cold run, so it runs alongside the weather and must not hold it back.
+    const calUrl = s.calendar.url;
+    const calP = Promise.allSettled([calUrl ? fetchCalendar(calUrl, s.calendar.secret, 14, { from: fromReq, trip: tripReq }) : Promise.resolve(null)]);
+    const [wx, aq, al] = await Promise.allSettled([
       fetchRawForecast(h.lat, h.lon, units),
       fetchAirQuality(h.lat, h.lon),
       fetchAlerts(h.lat, h.lon, h.countryCode),
-      s.calendar.url ? fetchCalendar(s.calendar.url, s.calendar.secret, 14, { from: fromReq, trip: tripReq }) : Promise.resolve(null),
     ]);
     if (units !== state.settings.units || h !== state.settings.home) return; // settings changed mid-flight
     let aqData;
@@ -399,6 +401,10 @@ async function refresh({ manual = false } = {}) {
       state.wxStale = !!state.home;
       if (state.home) state.home = { ...state.home, aqi: state.home.aqi, alerts };
     }
+    // Weather first: hero, hourly and week render now; calendar sections keep their cached / loading state until the script answers.
+    if (state.home || state.wxError) { render(); refreshStatus(); }
+    const [cal] = await calP;
+    if (units !== state.settings.units || h !== state.settings.home || calUrl !== state.settings.calendar.url) return;
     if (cal.status === 'fulfilled') {
       if (cal.value) applyCalendar(cal.value, { from: fromReq, trip: tripReq });
       else state.cal = null;

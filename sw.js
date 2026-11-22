@@ -1,7 +1,7 @@
 /* Home Life service worker. Same-origin: stale-while-revalidate. Fonts, the
    Anthropic SDK and the QR library: cache-first. Everything else goes straight to the network, and the
    Firebase SDK (www.gstatic.com), OpenStreetMap and RainViewer are never intercepted. */
-const VERSION = 'home-life-v5';
+const VERSION = 'home-life-v6';
 const CORE = VERSION + '-core';
 const RUNTIME = VERSION + '-runtime';
 
