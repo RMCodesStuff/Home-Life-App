@@ -280,7 +280,7 @@ function build() {
     if (extractKeyFromUrl($('cal-url').value).found && !commitUrl()) return;
     const url = $('cal-url').value.trim();
     if (!/^https:\/\//.test(url)) { out.textContent = 'paste the web app url first (it starts with https:// and ends in /exec).'; out.classList.add('err'); return; }
-    out.textContent = 'testing…';
+    out.textContent = 'testing… the first run can take up to a minute';
     try {
       const st = api.getSettings();
       const res = await fetchCalendar(url, st.calendar.secret);

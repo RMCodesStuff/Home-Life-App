@@ -27,7 +27,7 @@ export function bridgeTrip(travel, today) {
   return t ? { id: t.id, lat: t.lat, lon: t.lon, date: t.departDate } : null;
 }
 
-/** "anaheim · nov 22–26" */
+/** "seattle · mar 7–11" */
 export function tripSub(trip, fmtRange) {
   return `${trip.city.toLowerCase()} · ${fmtRange(trip.departDate, trip.returnDate)}`;
 }

@@ -95,14 +95,14 @@ test('fineWithHome adds dust and the watering call', () => {
 test('Claude facts: the extras are trimmed, money never included; the fingerprint follows them', () => {
   const ctx = ctxAt('2026-11-21T06:40');
   const v = composeHome(ctx, { target: '2026-11-21', today: '2026-11-21', evening: false, settings: SETTINGS, bridge: BRIDGE, meals: MEALS, summary: SUMMARY });
-  const extras = { workout: v.workout, dinner: v.dinner, birthdays: v.birthdays, rundownNote: v.rundown.note, parkDay: { name: 'Disneyland Park', hours: 'open 8am–midnight', shows: ['wondrous journeys 9:30pm · 54° & clear'] } };
+  const extras = { workout: v.workout, dinner: v.dinner, birthdays: v.birthdays, rundownNote: v.rundown.note, parkDay: { name: 'Starfall Park', hours: 'open 8am–midnight', shows: ['wondrous journeys 9:30pm · 54° & clear'] } };
   const facts = buildFacts(ctx, writeAll(ctx), extras);
   assert.equal(facts.workout.state, 'propose');
   assert.equal(facts.workout.session, 'full · Day B');
   assert.equal(facts.dinner.tonight, 'Chicken Fried Rice');
   assert.deepEqual(facts.birthdays, ["pat's birthday tomorrow · turning 60"]);
   assert.equal(facts.rundown_note, 'a calm saturday.');
-  assert.equal(facts.park_day.name, 'Disneyland Park');
+  assert.equal(facts.park_day.name, 'Starfall Park');
   assert.ok(!/\$\d/.test(JSON.stringify(facts)), 'no money amounts');
   const bare = buildFacts(ctx, writeAll(ctx));
   assert.deepEqual([bare.workout, bare.dinner, bare.birthdays, bare.rundown_note, bare.park_day], [null, null, [], '', null]);

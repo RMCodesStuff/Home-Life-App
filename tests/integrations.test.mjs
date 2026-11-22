@@ -333,3 +333,20 @@ test('manifest time zone, settings defaults', () => {
   assert.deepEqual(DEFAULT_SETTINGS.evening, { enabled: true, start: '18:00' });
   assert.deepEqual(DEFAULT_SETTINGS.trip, { manual: null, checklist: null });
 });
+
+// ------------------------------------------------------------------ fetch timeout vs network failure
+
+test('fetchCalendar: our own timer aborting is kind timeout; a real network failure stays kind network', async () => {
+  const { fetchCalendar, describeCalendarError, FETCH_TIMEOUT_MS } = await import('../js/calendar.js');
+  assert.equal(FETCH_TIMEOUT_MS, 90000);
+  const realFetch = globalThis.fetch;
+  globalThis.window = { __HL_FETCH_TIMEOUT_MS: 30 };
+  try {
+    globalThis.fetch = (url, { signal }) => new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+    await assert.rejects(fetchCalendar('https://script.example/exec', 'k'), (e) => e.kind === 'timeout');
+    globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+    await assert.rejects(fetchCalendar('https://script.example/exec', 'k'), (e) => e.kind === 'network');
+  } finally { globalThis.fetch = realFetch; delete globalThis.window; }
+  assert.match(describeCalendarError({ kind: 'timeout' }), /took longer than 90 seconds.*next run is usually much faster/);
+  assert.equal(describeCalendarError({ kind: 'network' }), "couldn't reach the calendar link. check your connection and the url.");
+});

@@ -65,7 +65,7 @@ export function parkDaysFor(parks, date) {
   return parks && parks.ok ? parks.days.filter((d) => d.date === date) : [];
 }
 
-/** Short tag for the week card: "disneyland", "california adventure". */
+/** Short tag for the week card: "starfall", "valley adventure". */
 export function parkTag(name) {
   return String(name || '').toLowerCase().replace(/[™®©]/g, '').replace(/^disney\s+/, '').replace(/\s+(theme\s+)?park$/, '').trim();
 }

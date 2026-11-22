@@ -7,7 +7,7 @@ import { haversineMiles } from '../js/geo.js';
 // Fictional home near Denver; all places and events are made up.
 const HOME = { lat: 39.74, lon: -104.99 };
 const PLACES = {
-  'harbor inn, 1 harbor way, santa barbara, ca 93101': { lat: 34.42, lon: -119.7, city: 'Santa Barbara', region: 'California' },
+  'pier inn, 1 pier way, santa barbara, ca 93101': { lat: 34.42, lon: -119.7, city: 'Santa Barbara', region: 'California' },
   'state street cafe, santa barbara, ca': { lat: 34.43, lon: -119.69, city: 'Santa Barbara', region: 'California' },
   'riverside hall, laramie, wy': { lat: 41.31, lon: -105.59, city: 'Laramie', region: 'Wyoming' },
   '123 main st, denver, co': { lat: 39.75, lon: -104.98, city: 'Denver', region: 'Colorado' },
@@ -19,7 +19,7 @@ function fakeGeocoder() {
 }
 
 const EVENTS = normalizeEvents([
-  { id: 'stay', title: 'Stay at Harbor Inn', allDay: true, start: '2026-11-22', end: '2026-11-26', location: '1 Harbor Way, Santa Barbara, CA 93101'.replace(/^/, 'Harbor Inn, ') },
+  { id: 'stay', title: 'Stay at Pier Inn', allDay: true, start: '2026-11-22', end: '2026-11-26', location: '1 Pier Way, Santa Barbara, CA 93101'.replace(/^/, 'Pier Inn, ') },
   { id: 'dinner', title: 'Dinner', allDay: false, start: '2026-11-23T19:00:00-07:00', end: '2026-11-23T21:00:00-07:00', location: 'State Street Cafe, Santa Barbara, CA' },
   { id: 'gym', title: 'Gym', allDay: false, start: '2026-11-21T09:00:00-07:00', end: '2026-11-21T10:00:00-07:00', location: '123 Main St, Denver, CO' },
   { id: 'call', title: 'Planning call', allDay: false, start: '2026-11-21T13:00:00-07:00', end: '2026-11-21T13:30:00-07:00', location: 'https://zoom.us/j/000000' },
@@ -30,7 +30,7 @@ const EVENTS = normalizeEvents([
 
 test('meeting links are not places', () => {
   for (const s of ['https://zoom.us/j/1', 'meet.google.com/x', 'teams.microsoft.com/l/x', 'Webex room', 'Online', 'http://x']) assert.ok(NOT_A_PLACE.test(s), s);
-  assert.ok(!NOT_A_PLACE.test('1 Harbor Way, Santa Barbara'));
+  assert.ok(!NOT_A_PLACE.test('1 Pier Way, Santa Barbara'));
 });
 
 test('detects a lodging trip with depart/return flags, a day trip, and ignores local + online events', async () => {

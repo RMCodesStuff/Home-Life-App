@@ -16,8 +16,8 @@ const DATA = {
     notable: [{ merchant: 'Costco', amount: 286.41, date: '2026-11-21' }],
   },
   fantasy: { line: 'lineup locks 11am · 1 questionable', gameDay: true, lockLocal: '11:00am', matchup: 'you 112.4 projected vs 104.8', alerts: ['a starter is questionable (hamstring)'], swaps: ['start x over y (modest edge)'], waivers: [] },
-  playlist: { name: 'Westbound', url: 'https://open.spotify.com/playlist/abc123', why: 'road trip to anaheim' },
-  trip: { city: 'Anaheim', packing: ['a warm layer for nights in the low 50s', 'ear plugs'], note: 'cool nights' },
+  playlist: { name: 'Westbound', url: 'https://open.spotify.com/playlist/abc123', why: 'road trip to seattle' },
+  trip: { city: 'Seattle', packing: ['a warm layer for nights in the low 50s', 'ear plugs'], note: 'cool nights' },
 };
 const B = (over = {}) => ({ ok: true, file: 'home-life-briefing-2026-11-22.json', forDate: '2026-11-22', stale: false, data: DATA, ...over });
 
@@ -64,7 +64,7 @@ test('rundownView: sections, money formatting, hidden when old or failed, from y
   assert.equal(v.money.budget.status, 'ahead of pace');
   assert.equal(v.money.budget.text, '$2,340.12 of $3,000.00 · 73% through the month');
   assert.deepEqual(v.fantasy, { line: 'lineup locks 11am · 1 questionable', alerts: ['a starter is questionable (hamstring)'], swaps: ['start x over y (modest edge)'], waivers: [] });
-  assert.deepEqual(v.playlist, { name: 'Westbound', why: 'road trip to anaheim', url: 'https://open.spotify.com/playlist/abc123' });
+  assert.deepEqual(v.playlist, { name: 'Westbound', why: 'road trip to seattle', url: 'https://open.spotify.com/playlist/abc123' });
   const y = rundownView(normalizeBriefing(B({ forDate: '2026-11-21', stale: true, data: { ...DATA, forDate: '2026-11-21' } })), '2026-11-22');
   assert.equal(y.sub, 'from claude at 5:41am · from yesterday');
   assert.equal(rundownView(normalizeBriefing(B({ forDate: '2026-11-20' })), '2026-11-22'), null, 'older than yesterday');

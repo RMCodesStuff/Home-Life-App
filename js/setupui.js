@@ -8,7 +8,7 @@ export function setupMarkup() {
   return `
     <section class="set-sec" id="set-devices" aria-labelledby="set-devices-h">
       <h3 id="set-devices-h">Other devices</h3>
-      <p class="note tight">set up your phone, or kate's, in one step: open the link on the other device and it picks up your home, your google script and the rest of these settings.</p>
+      <p class="note tight">set up your phone, or someone else's in your home, in one step: open the link on the other device and it picks up your home, your google script and the rest of these settings.</p>
       <label class="switch" for="setup-claude"><input type="checkbox" id="setup-claude"> include my claude api key</label>
       <div class="set-row"><button class="btn btn-accent" type="button" id="setup-copy">copy setup link</button>
         <button class="btn" type="button" id="setup-qr-btn">show QR code</button></div>
@@ -16,7 +16,7 @@ export function setupMarkup() {
       <label for="setup-link" class="vh">setup link</label>
       <textarea id="setup-link" readonly hidden></textarea>
       <div class="qr-box" id="setup-qr" hidden></div>
-      <p class="note warn-note">this link carries your google script key and home: anyone who has it can read what your script returns. send it only to yourself or kate.</p>
+      <p class="note warn-note">this link carries your google script key and home: anyone who has it can read what your script returns. send it only to yourself or someone else in your home.</p>
     </section>`;
 }
 

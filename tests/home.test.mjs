@@ -10,19 +10,19 @@ import {
 // ---------------------------------------------------------------- calendars
 const EVS = [
   ...Array.from({ length: 5 }, (_, i) => ({ id: `m${i}`, calendar: 'me@example.com' })),
-  { id: 'k1', calendar: 'kate.doe@gmail.example' }, { id: 'k2', calendar: 'kate.doe@gmail.example' },
+  { id: 'k1', calendar: 'sam.doe@example.com' }, { id: 'k2', calendar: 'sam.doe@example.com' },
   { id: 'f1', calendar: 'Family' }, { id: 'h1', calendar: 'Holidays in United States' }, { id: 'x', calendar: '' },
 ];
 
 test('auto labels and the busiest calendar as your own', () => {
-  assert.equal(autoLabel('kate.doe@gmail.example'), 'kate');
+  assert.equal(autoLabel('sam.doe@example.com'), 'sam');
   assert.equal(autoLabel('Family'), 'family');
   assert.equal(autoLabel('Holidays in United States'), 'holidays');
-  assert.deepEqual(calendarNames(EVS).map((c) => [c.name, c.count]), [['me@example.com', 5], ['kate.doe@gmail.example', 2], ['Family', 1], ['Holidays in United States', 1]]);
+  assert.deepEqual(calendarNames(EVS).map((c) => [c.name, c.count]), [['me@example.com', 5], ['sam.doe@example.com', 2], ['Family', 1], ['Holidays in United States', 1]]);
   const list = calendarList(EVS, {});
   assert.deepEqual(list.map((c) => [c.name, c.own, c.label, c.color, c.show]), [
     ['me@example.com', true, '', '', true],
-    ['kate.doe@gmail.example', false, 'kate', 'sage', true],
+    ['sam.doe@example.com', false, 'sam', 'sage', true],
     ['Family', false, 'family', 'sky', true],
     ['Holidays in United States', false, 'holidays', 'plum', true],
   ]);
@@ -30,17 +30,17 @@ test('auto labels and the busiest calendar as your own', () => {
 });
 
 test('settings override labels, colors and visibility; the filter applies everywhere', () => {
-  const cfg = { 'kate.doe@gmail.example': { label: 'Kate', color: 'plum' }, Family: { label: '' }, 'Holidays in United States': { show: false }, 'me@example.com': { label: 'me', color: 'nope' } };
+  const cfg = { 'sam.doe@example.com': { label: 'Sam', color: 'plum' }, Family: { label: '' }, 'Holidays in United States': { show: false }, 'me@example.com': { label: 'me', color: 'nope' } };
   const list = calendarList(EVS, cfg);
   const by = Object.fromEntries(list.map((c) => [c.name, c]));
-  assert.equal(by['kate.doe@gmail.example'].label, 'kate');
-  assert.equal(by['kate.doe@gmail.example'].color, 'plum');
+  assert.equal(by['sam.doe@example.com'].label, 'sam');
+  assert.equal(by['sam.doe@example.com'].color, 'plum');
   assert.equal(by.Family.label, '', 'an empty label means no tag');
   assert.equal(by['Holidays in United States'].show, false);
   assert.equal(by['me@example.com'].label, 'me');
   assert.equal(by['me@example.com'].color, TAG_COLORS[0], 'a bad color falls back');
   const tags = tagMap(list);
-  assert.deepEqual([...tags.keys()], ['me@example.com', 'kate.doe@gmail.example', 'Holidays in United States']);
+  assert.deepEqual([...tags.keys()], ['me@example.com', 'sam.doe@example.com', 'Holidays in United States']);
   assert.deepEqual(filterEvents(EVS, cfg).map((e) => e.id).includes('h1'), false);
   assert.equal(filterEvents(EVS, cfg).length, EVS.length - 1);
   assert.equal(filterEvents(EVS, {}), EVS, 'nothing configured: everything');
@@ -48,7 +48,7 @@ test('settings override labels, colors and visibility; the filter applies everyw
 
 test('work calendars: chosen in settings, or by name', () => {
   assert.equal(isWorkCalendar('Work'), true);
-  assert.equal(isWorkCalendar('kate work'), true);
+  assert.equal(isWorkCalendar('sam work'), true);
   assert.equal(isWorkCalendar('pat@acme.example'), true, 'a company email');
   assert.equal(isWorkCalendar('pat@gmail.example'), false);
   assert.equal(isWorkCalendar('Family'), false);
@@ -60,7 +60,7 @@ test('work calendars: chosen in settings, or by name', () => {
 
 // ---------------------------------------------------------------- phoenix pack
 const day = (date, o = {}) => ({ date, high: 75, low: 50, precipSum: 0, et0: 0.16, uvMax: 5, ...o });
-const mdl = (days, hours = []) => ({ days, hours, offset: -25200, tz: 'America/Phoenix' });
+const mdl = (days, hours = []) => ({ days, hours, offset: -25200, tz: 'America/Denver' });
 const POWER = { enabled: true, windows: [{ days: [1, 2, 3, 4, 5], start: '16:00', end: '19:00' }], months: [5, 6, 7, 8, 9, 10], mode: 'months', hotAt: 90 };
 
 test('power peak chip', () => {

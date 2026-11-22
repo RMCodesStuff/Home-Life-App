@@ -19,7 +19,7 @@ function coastModel() {
   r2.hourly.temperature_2m = r2.hourly.temperature_2m.map((t) => t + 8);
   r2.daily.temperature_2m_max = r2.daily.temperature_2m_max.map((t) => t + 8);
   r2.daily.temperature_2m_min = r2.daily.temperature_2m_min.map((t) => t + 8);
-  return normalize(r2, { name: 'Anaheim' }, 'imperial', {});
+  return normalize(r2, { name: 'Seattle' }, 'imperial', {});
 }
 const at = (model, now) => modelAt(model, now);
 const ctxAt = (now, over = {}) => ({ now, units: 'imperial', model: at(home, now), homeModel: at(home, now), tripModels: {}, travel: null, events: [], ...over });
@@ -60,8 +60,8 @@ test("tomorrow's edition: high, condition, headline, a narrative that starts at 
 
 test("tomorrow's edition uses the trip forecast when you wake up away, and adds an umbrella on wet days", () => {
   const coast = coastModel();
-  const travel = withManualTrip(null, { city: 'Anaheim', lat: 33.83, lon: -117.91, departDate: '2026-11-21', returnDate: '2026-11-25' });
-  const id = manualTrip({ city: 'Anaheim', lat: 33.83, lon: -117.91, departDate: '2026-11-21', returnDate: '2026-11-25' }).id;
+  const travel = withManualTrip(null, { city: 'Seattle', lat: 47.61, lon: -122.33, departDate: '2026-11-21', returnDate: '2026-11-25' });
+  const id = manualTrip({ city: 'Seattle', lat: 47.61, lon: -122.33, departDate: '2026-11-21', returnDate: '2026-11-25' }).id;
   const t = tomorrowEdition(ctxAt('2026-11-21T19:30', { travel, tripModels: { [id]: coast } }));
   assert.equal(t.away, true);
   assert.equal(t.high, 71);
@@ -111,11 +111,11 @@ test('yourDay with a date shows that whole day and nothing after it', () => {
 });
 
 // ---------------------------------------------------------------- the second card
-const M = { city: 'Anaheim', region: 'California', lat: 33.83, lon: -117.91, departDate: '2026-11-22', returnDate: '2026-11-26' };
-const TRIP_ID = 'anaheim|2026-11-22';
+const M = { city: 'Seattle', region: 'Washington', lat: 47.61, lon: -122.33, departDate: '2026-11-22', returnDate: '2026-11-26' };
+const TRIP_ID = 'seattle|2026-11-22';
 const PARKS = normalizeParks({
   ok: true,
-  days: [{ date: '2026-11-23', name: 'Disneyland Park', timezone: 'America/Los_Angeles', hours: { open: '2026-11-23T08:00:00-08:00', close: '2026-11-24T00:00:00-08:00' }, shows: [], waits: [] }],
+  days: [{ date: '2026-11-23', name: 'Starfall Park', timezone: 'America/Los_Angeles', hours: { open: '2026-11-23T08:00:00-08:00', close: '2026-11-24T00:00:00-08:00' }, shows: [], waits: [] }],
 });
 const SETTINGS = { show: { tripPrep: true, parks: true }, trip: { manual: M, checklist: null } };
 function scene(over = {}) {
@@ -131,7 +131,7 @@ test('composeTrip: trip prep with packing from the trip forecast and ticks', () 
   const v = scene();
   assert.deepEqual(v.park, []);
   assert.equal(v.prep.trip.id, TRIP_ID);
-  assert.equal(v.prep.sub, 'anaheim · nov 22–26');
+  assert.equal(v.prep.sub, 'seattle · nov 22–26');
   assert.equal(v.prep.departsIn, 1);
   assert.equal(v.prep.drive, '', 'no bridge: no drive line');
   assert.equal(v.prep.needsUpdate, false);
@@ -149,13 +149,13 @@ test('composeTrip: bridge drive only for the trip it was asked about; old script
   const v = scene({ opts: { bridge: { version: 3, parks: PARKS, tripDrive: td, tripReq: { id: TRIP_ID, date: '2026-11-22' } } } });
   assert.equal(v.prep.drive, '5h 42m drive · 372 mi via I-10 W');
   assert.ok(v.prep.packing.some((x) => x.text === 'comfortable walking shoes'), 'a park day during the trip');
-  assert.deepEqual(v.parkTags, { '2026-11-23': 'disneyland' });
+  assert.deepEqual(v.parkTags, { '2026-11-23': 'starfall' });
   const other = scene({ opts: { bridge: { version: 3, parks: null, tripDrive: td, tripReq: { id: 'elsewhere|2026-11-22' } } } });
   assert.equal(other.prep.drive, '');
   assert.equal(scene({ opts: { bridge: { version: 2 } } }).prep.needsUpdate, true);
   const park = scene({ opts: { target: '2026-11-23', today: '2026-11-23', bridge: { version: 3, parks: PARKS } } });
   assert.equal(park.park.length, 1);
-  assert.equal(park.park[0].name, 'Disneyland Park');
+  assert.equal(park.park[0].name, 'Starfall Park');
   assert.equal(park.park[0].hours, 'open 8am–midnight');
   const off = scene({ opts: { target: '2026-11-23', settings: { ...SETTINGS, show: { tripPrep: true, parks: false } }, bridge: { version: 3, parks: PARKS } } });
   assert.deepEqual(off.park, []);
@@ -166,7 +166,7 @@ test('composeTrip: conflicts for the target day', () => {
   const near = { lat: 39.75, lon: -104.98, city: 'Fictionville' };
   const events = [{ id: 'x', title: 'Book club', allDay: false, start: '2026-11-24T18:00:00-07:00', date: '2026-11-24', dates: ['2026-11-24'], ls: '2026-11-24T17:00', le: '2026-11-24T18:00', location: '1 Main St, Fictionville' }];
   const v = scene({ ctx: { events }, opts: { target: '2026-11-24', coordsFor: () => near } });
-  assert.deepEqual(v.dayConflicts, ["book club tue 6pm is in fictionville, but you're in anaheim that day"]);
+  assert.deepEqual(v.dayConflicts, ["book club tue 6pm is in fictionville, but you're in seattle that day"]);
   assert.deepEqual(scene({ ctx: { events }, opts: { coordsFor: () => near } }).dayConflicts, [], 'other days stay out of your day');
   assert.equal(scene({ ctx: { events }, opts: { target: '2026-11-21', coordsFor: () => near } }).prep.conflicts.length, 1, 'trip prep lists the trip\'s conflicts');
 });

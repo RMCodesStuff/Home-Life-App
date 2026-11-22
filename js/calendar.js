@@ -4,6 +4,18 @@ import { normalizeParks, normalizeTripDrive } from './parks.js';
 import { normalizeBriefing, normalizeBirthdays } from './briefing.js';
 
 /**
+ * How long we wait for the Apps Script web app. A cold run that reads Calendar, Gmail, Drive, People, Maps and
+ * ThemeParks.wiki can take 30-60 s; the platform allows up to 6 minutes. 90 s leaves margin without hanging forever.
+ * `window.__HL_FETCH_TIMEOUT_MS` is a test-only override.
+ */
+export const FETCH_TIMEOUT_MS = 90000;
+export const FETCH_TIMEOUT_SECONDS = 90;
+const timeoutMs = () => {
+  const o = typeof window !== 'undefined' ? Number(window.__HL_FETCH_TIMEOUT_MS) : NaN;
+  return Number.isFinite(o) && o > 0 ? o : FETCH_TIMEOUT_MS;
+};
+
+/**
  * `from` ({lat, lon}) is today's primary location; the v2 bridge uses it for leave-by drive times.
  * A v1 bridge ignores it (and answers without `version`).
  * `trip` ({lat, lon, date}) is a trip departing within 2 days; the v3 bridge answers with the drive there (`tripDrive`).
@@ -16,11 +28,13 @@ export async function fetchCalendar(url, secret, days = 14, { from = null, trip 
     ? `&trip=${trip.lat.toFixed(4)},${trip.lon.toFixed(4)}&tripDate=${trip.date}` : '';
   const full = `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}&days=${days}${fromQ}${tripQ}`;
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 25000);
+  let timedOut = false;
+  const t = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs());
   let res;
   try {
     res = await fetch(full, { signal: ctl.signal });
   } catch {
+    if (timedOut) throw { kind: 'timeout', status: 0, message: 'timeout' };
     throw { kind: 'network', status: 0, message: 'network' };
   } finally { clearTimeout(t); }
   if (res.status === 401 || res.status === 403) throw { kind: 'http', status: res.status, message: `http ${res.status}` };
@@ -102,6 +116,7 @@ export function describeCalendarError(err) {
       if (err.status === 404) return 'the calendar link answered 404. check that you pasted the full web app url (it ends in /exec).';
       return `the calendar link answered ${err.status}. check the url and redeploy.`;
     case 'bad-json': return "the calendar link didn't return calendar data. check that you pasted the web app url (ends in /exec).";
+    case 'timeout': return `the google script took longer than ${FETCH_TIMEOUT_SECONDS} seconds to answer. try again — the next run is usually much faster.`;
     case 'network': return "couldn't reach the calendar link. check your connection and the url.";
     default: return 'something went wrong reaching your calendar.';
   }

@@ -44,6 +44,33 @@ function parseDateIn(text, tz) {
 }
 
 /** Build a fresh script context. `world` lets each test script the outside world. */
+/** DriveApp fake: searchFiles understands the title = '...' / title contains '...' and trashed = false parts of the bridge's query. */
+function driveApp(driveFolders, world) {
+  world.drive = { searches: [], getNames: 0, parentCalls: 0, blobReads: 0, lastUpdatedCalls: 0 };
+  const all = () => driveFolders.flatMap((f) => (f.files || []).map((file) => ({ file, folder: f })));
+  return {
+    searchFiles(q) {
+      world.drive.searches.push(q);
+      const exact = [...q.matchAll(/title = '([^']+)'/g)].map((m) => m[1]);
+      const contains = [...q.matchAll(/title contains '([^']+)'/g)].map((m) => m[1]);
+      const rows = all().filter(({ file, folder }) => {
+        const name = file.getName();
+        if (exact.length && !exact.includes(name)) return false;
+        if (contains.length && !contains.every((c) => name.includes(c))) return false;
+        if (/trashed = false/.test(q) && ((file.isTrashed && file.isTrashed()) || folder.trashed)) return false;
+        return true;
+      });
+      const wrapped = rows.map(({ file, folder }) => ({
+        getName: () => { world.drive.getNames++; return file.getName(); },
+        getLastUpdated: () => { world.drive.lastUpdatedCalls++; return file.getLastUpdated(); },
+        getBlob: () => { world.drive.blobReads++; return file.getBlob(); },
+        getParents: () => { world.drive.parentCalls++; return iter([{ getName: () => folder.name, isTrashed: () => !!folder.trashed }]); },
+      }));
+      return iter(wrapped);
+    },
+  };
+}
+
 function load({ source = SECRET_SRC, props = {}, calendars = [], fetchHandler = () => ({ code: 404, body: '{}' }), directions = () => null, driveFolders = [] } = {}) {
   const store = new Map();
   const cacheStore = new Map();
@@ -54,7 +81,7 @@ function load({ source = SECRET_SRC, props = {}, calendars = [], fetchHandler = 
   const sandbox = {
     Session: { getScriptTimeZone: () => TZ },
     Utilities: { formatDate, getUuid: () => `uuid-${++uuid}`, parseDate: parseDateIn },
-    DriveApp: { getFoldersByName: (name) => iter(driveFolders.filter((f) => f.name === name).map((f) => ({ getFiles: () => iter(f.files) }))) },
+    DriveApp: driveApp(driveFolders, world),
     CacheService: {
       getScriptCache: () => ({
         get: (k) => (cacheStore.has(k) ? cacheStore.get(k) : null),
@@ -478,7 +505,7 @@ test('doGet: disabled features are reported as disabled', () => {
     .replace('const ENABLE_TRIP_DRIVE = true', 'const ENABLE_TRIP_DRIVE = false').replace('const ENABLE_BIRTHDAYS = true', 'const ENABLE_BIRTHDAYS = false');
   const start = Date.now() + 3600000;
   const w = load({ source: src, calendars: [fakeCal([fakeEvent({ id: 'e', title: 'x', startMs: start, endMs: start + 1, location: '1 A St' })])], directions: () => route(600) });
-  const body = JSON.parse(w.call('doGet', { parameter: { key: KEY, from: '39.74,-104.99', trip: '33.8,-117.9', tripDate: '2026-11-23' } }).text);
+  const body = JSON.parse(w.call('doGet', { parameter: { key: KEY, from: '39.74,-104.99', trip: '47.6,-122.3', tripDate: '2026-11-23' } }).text);
   assert.deepEqual(body.inbox, { ok: false, error: 'disabled' });
   for (const k of ['briefing', 'parks', 'tripDrive', 'birthdays']) assert.deepEqual(body[k], { ok: false, error: 'disabled' }, k);
   assert.deepEqual(body.features, { gmail: false, leaveBy: false, oura: false, briefing: false, parks: false, tripDrive: false, birthdays: false });

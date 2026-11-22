@@ -17,7 +17,7 @@ A morning weather report that preps you for your day. Open it and you get:
 - **Birthdays** from your Google contacts in the next two weeks
 - **Dinner tonight** from the meal planner, with a thaw reminder the evening before and an eat-by time on busy evenings
 - **Today's workout** from the rack session timer: which session, the best free window in your calendar, and a button that opens the timer on it
-- **Whose event**: calendar labels and colors, and a filter for which calendars show (see "Kate's view")
+- **Whose event**: calendar labels and colors, and a filter for which calendars show (see "A second person's view")
 - **Phoenix home pack** (opt-in): power peak hours with a pre-cool time, skip-or-water advice, dust warnings, a rain radar strip, chore reminders and kid-friendly heat tips
 - **Read it to me**: the speaker button in the top card reads the forecast aloud
 
@@ -55,6 +55,8 @@ The app reads Google through a small Apps Script that you deploy in your own Goo
 6. Approve the Google permission prompt (read-only calendar, gmail, drive and contacts).
 7. Copy the **Web app URL** (ends in `/exec`), paste it into settings -> Google, then tap **test connection**.
 
+The first sync can take up to a minute: a cold Apps Script run reads Calendar, Gmail, Drive, Contacts, Maps and ThemeParks.wiki. The app waits up to 90 seconds, and later runs are much faster (the script caches its answers).
+
 The files are `calendar-bridge/Code.gs` and `calendar-bridge/appsscript.json`. Gmail is read through the Gmail REST API with the read-only scope. If Google's Maps service asks for an extra permission the first time, approve it; drive times only run for today's and tomorrow-morning events that have a street address.
 
 ### Updating an existing deployment
@@ -70,9 +72,9 @@ In settings -> Google you can hide **waiting on you** and **leave-by times**, an
 Each browser makes its own private key for the Google script, so a second device can't use a script you deployed from the first one until it has the same key. The easy way is a setup link.
 
 1. On the device that already works: settings -> **Other devices** -> **copy setup link** (or **show QR code** and scan it with the other phone's camera).
-2. Send the link to yourself or Kate and open it on the other device (installed app or browser). The app asks "Set up this device with your Home Life settings?" and lists what it will apply. **use these settings** replaces that device's settings with yours; **cancel** changes nothing. The address bar is cleared either way.
+2. Send the link to yourself or someone else in your home and open it on the other device (installed app or browser). The app asks "Set up this device with your Home Life settings?" and lists what it will apply. **use these settings** replaces that device's settings with yours; **cancel** changes nothing. The address bar is cleared either way.
 
-The link carries your home, units and theme, evening settings, the Google web app url and private key, calendar labels, colors and filters, work calendars, a trip you added and your checklist, chores, power peak and watering, the on/off switches and workout preferences. It never carries cached data or the meal planner / rack timer sign-ins, and it leaves out your Claude API key unless you tick **include my claude api key**. The data sits in the part of the link after `#`, which browsers don't send to any server. It still contains your script key, so anyone who has the link can read what your script returns: send it only to yourself or Kate.
+The link carries your home, units and theme, evening settings, the Google web app url and private key, calendar labels, colors and filters, work calendars, a trip you added and your checklist, chores, power peak and watering, the on/off switches and workout preferences. It never carries cached data or the meal planner / rack timer sign-ins, and it leaves out your Claude API key unless you tick **include my claude api key**. The data sits in the part of the link after `#`, which browsers don't send to any server. It still contains your script key, so anyone who has the link can read what your script returns: send it only to yourself or someone else in your home.
 
 ### The private key field
 
@@ -116,11 +118,11 @@ Your day ends with `dinner · chicken fried rice` (and breakfast and lunch when 
 
 The rack timer (same site, so same browser storage) leaves a small summary for this app every time its log changes. Home Life reads it directly; to also see it from your other devices, settings -> **Workout -> connect rack timer account** (the timer's Firebase already allows this site). The card proposes a session (lighter on low readiness, the short version on workdays or after three days in a row, a hotel-room circuit when you're away, rest on park days), the best free window in your calendar (it steers around a hot garage), and a **start in rack timer** button that opens the timer on that session. Pick your work calendars and a preferred time of day in settings -> Workout.
 
-## Kate's view: calendars and whose event
+## A second person's view: calendars and whose event
 
-Settings -> **Calendars** lists the calendars your script sends. Give each a short label and one of five colors (your busiest calendar has no tag; others are tagged with their name, like `kate`), and switch off any calendar to hide it everywhere: Your day, trip detection, leave-by times, the workout window and tomorrow's edition.
+Settings -> **Calendars** lists the calendars your script sends. Give each a short label and one of five colors (your busiest calendar has no tag; others are tagged with their name, like `sam`), and switch off any calendar to hide it everywhere: Your day, trip detection, leave-by times, the workout window and tomorrow's edition.
 
-Kate's view is the same app on Kate's phone: she installs it, opens the setup link you send her (see "Using more than one device"; or she deploys her own script for her own calendars and inbox), picks her calendars in settings -> Calendars, and turns off what isn't hers (waiting on you, Oura, the workout, the rundown) with the switches in settings.
+A second person's view is the same app on their phone: they install it, open the setup link you send them (see "Using more than one device"; or they deploy their own script for their own calendars and inbox), they pick their calendars in settings -> Calendars, and turn off what isn't theirs (waiting on you, Oura, the workout, the rundown) with the switches in settings.
 
 ## Phoenix home pack
 

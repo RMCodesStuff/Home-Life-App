@@ -4,7 +4,7 @@
 export const TAG_COLORS = ['sage', 'sky', 'plum', 'gold', 'clay']; // clay last: it's closest to the accent
 const PERSONAL_DOMAINS = /^(gmail|googlemail|icloud|me|mac|outlook|hotmail|live|msn|yahoo|ymail|aol|proton|protonmail|pm|fastmail|hey)\./i;
 
-/** "kate" from "kate.doe@gmail.example", "family" from "Family", "holidays" from "Holidays in United States". */
+/** "sam" from "sam.doe@example.com", "family" from "Family", "holidays" from "Holidays in United States". */
 export function autoLabel(name) {
   const s = String(name || '').trim().toLowerCase();
   const base = s.includes('@') ? s.split('@')[0].split(/[._+-]/)[0] : s.split(/\s+/)[0];

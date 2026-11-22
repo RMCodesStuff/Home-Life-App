@@ -26,8 +26,9 @@
  *   drive.readonly           reads the briefing file the Claude run creates.
  *                            The Drive connector cannot edit file contents, so
  *                            the narrower drive.file scope would not see those
- *                            files. This script only lists the "Home Life"
- *                            folder and reads home-life-briefing-*.json.
+ *                            files. This script only searches for
+ *                            home-life-briefing-YYYY-MM-DD.json (in a folder
+ *                            named "Home Life") and reads the newest one.
  *   contacts.readonly        birthdays (People API).
  *   script.external_request  Gmail API, Oura, ThemeParks.wiki, People API.
  *
@@ -113,6 +114,9 @@ const INBOX_CACHE_SECONDS = 600;
 const OURA_CACHE_SECONDS = 1200;
 const ROUTE_CACHE_SECONDS = 2700;
 const BRIEFING_CACHE_SECONDS = 600;
+const BRIEFING_MISSING_CACHE_SECONDS = 300; // remember "no file yet" so each request doesn't search Drive again
+const RESPONSE_CACHE_SECONDS = 60;
+const RESPONSE_CACHE_MAX_BYTES = 500000;
 const BRIEFING_MAX_AGE_DAYS = 2;
 const BRIEFING_MAX_BYTES = 200000;
 const DEST_CACHE_SECONDS = 86400;
@@ -170,6 +174,18 @@ function doGet(e) {
   if (!(days > 0)) days = DEFAULT_DAYS;
   days = Math.min(days, MAX_DAYS);
 
+  // Whole-response cache: only reached after the key check above, never for oura-connect or the OAuth callback.
+  const respKey = responseCacheKey_(days, params);
+  const respCache = cacheOf_();
+  if (respKey) {
+    const cached = cacheReadBig_(respCache, respKey);
+    if (cached && typeof cached === 'object' && cached.ok === true && cached.version === BRIDGE_VERSION) {
+      console.log('hl-timing response cache hit');
+      return respond_(cached);
+    }
+  }
+
+  const t0 = Date.now();
   const tz = Session.getScriptTimeZone();
   const nowMs = Date.now();
   const now = new Date(nowMs);
@@ -177,12 +193,12 @@ function doGet(e) {
   const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + days + 1);
   const from = parseFromParam_(params.from);
 
-  const events = collectEvents_(start, end, tz);
+  const events = timed_('calendar', function () { return collectEvents_(start, end, tz); });
 
   if (ENABLE_LEAVE_BY && from) {
-    try { addLeaveBy_(events, from, nowMs, tz); } catch (err) { /* leave-by is best effort */ }
+    try { timed_('leaveBy', function () { addLeaveBy_(events, from, nowMs, tz); }); } catch (err) { /* leave-by is best effort */ }
   }
-  const parks = isolate_(function () { return parksFeature_(events, nowMs, tz); });
+  const parks = isolate_(function () { return timed_('parks', function () { return parksFeature_(events, nowMs, tz); }); });
   events.forEach(function (ev) { delete ev.sortKey; delete ev.startMs; });
 
   const out = {
@@ -195,16 +211,37 @@ function doGet(e) {
       briefing: ENABLE_BRIEFING, parks: ENABLE_PARKS, tripDrive: ENABLE_TRIP_DRIVE, birthdays: ENABLE_BIRTHDAYS
     },
     events: events,
-    inbox: inboxFeature_(nowMs, tz),
-    oura: ouraFeature_(nowMs, tz),
-    briefing: isolate_(function () { return briefingFeature_(nowMs, tz); }),
+    inbox: timed_('inbox', function () { return inboxFeature_(nowMs, tz); }),
+    oura: timed_('oura', function () { return ouraFeature_(nowMs, tz); }),
+    briefing: isolate_(function () { return timed_('briefing', function () { return briefingFeature_(nowMs, tz); }); }),
     parks: parks,
-    birthdays: isolate_(function () { return birthdaysFeature_(nowMs, tz); })
+    birthdays: isolate_(function () { return timed_('birthdays', function () { return birthdaysFeature_(nowMs, tz); }); })
   };
   if (params.trip) {
-    out.tripDrive = isolate_(function () { return tripDriveFeature_(params.trip, params.tripDate, from, nowMs, tz); });
+    out.tripDrive = isolate_(function () { return timed_('tripDrive', function () { return tripDriveFeature_(params.trip, params.tripDate, from, nowMs, tz); }); });
   }
+  if (respKey) {
+    let size = Infinity;
+    try { size = JSON.stringify(out).length; } catch (err) { /* not cacheable */ }
+    if (size <= RESPONSE_CACHE_MAX_BYTES) cacheWriteBig_(respCache, respKey, out, RESPONSE_CACHE_SECONDS);
+  }
+  console.log('hl-timing total ' + (Date.now() - t0) + 'ms');
   return respond_(out);
+}
+
+/** Cache key for a whole response, or null when a parameter is too odd to key on. Call only after the key check. */
+function responseCacheKey_(days, params) {
+  if (params.action) return null; // oura-connect and anything else with an action is never cached
+  const part = function (v) { return String(v === undefined || v === null ? '' : v).trim(); };
+  const from = part(params.from), trip = part(params.trip), tripDate = part(params.tripDate);
+  if (from.length > 40 || trip.length > 40 || tripDate.length > 12) return null;
+  return 'hl-resp-v' + BRIDGE_VERSION + '|' + days + '|' + from + '|' + trip + '|' + tripDate;
+}
+
+/** Runs fn and logs how long it took (Apps Script: Executions -> log). Never part of the response. */
+function timed_(label, fn) {
+  const t = Date.now();
+  try { return fn(); } finally { console.log('hl-timing ' + label + ' ' + (Date.now() - t) + 'ms'); }
 }
 
 /** Runs one feature; a throw becomes {ok:false} so it can never break the response. */
@@ -432,6 +469,20 @@ function listThreads_(query, max) {
   return (j.threads || []).map(function (t) { return t.id; });
 }
 
+/** Several thread-list searches in one parallel round: [{ids}|{error}] in the order asked. */
+function listThreadsAll_(searches) {
+  const token = ScriptApp.getOAuthToken();
+  const reqs = searches.map(function (q) {
+    return { url: GMAIL_API + '/threads?q=' + encodeURIComponent(q[0]) + '&maxResults=' + q[1], headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true };
+  });
+  return UrlFetchApp.fetchAll(reqs).map(function (res) {
+    try {
+      const j = gmailParse_(res);
+      return { ids: (j.threads || []).map(function (t) { return t.id; }) };
+    } catch (err) { return { error: err }; }
+  });
+}
+
 /** Fetches thread metadata in one batch. Failed threads are skipped. */
 function fetchThreads_(ids) {
   if (!ids.length) return [];
@@ -610,10 +661,18 @@ function inboxFeature_(nowMs, tz) {
   const hit = cacheRead_(cache, 'hl-inbox-v2');
   if (hit) return hit;
   try {
-    const waiting = buildWaiting_(fetchThreads_(listThreads_(WAITING_QUERY, MAX_WAITING_FETCH)));
+    // Both thread lists in one parallel round, then every thread's metadata in a second one.
+    const lists = listThreadsAll_([[WAITING_QUERY, MAX_WAITING_FETCH], [PACKAGE_QUERY, MAX_PACKAGE_FETCH]]);
+    if (lists[0].error) throw lists[0].error;
+    const waitingIds = lists[0].ids;
+    const packageIds = lists[1].error ? [] : lists[1].ids; // packages are a bonus; keep the waiting list
+    const unique = {};
+    waitingIds.concat(packageIds).forEach(function (id) { unique[id] = true; });
+    const threads = fetchThreads_(Object.keys(unique));
+    const waiting = buildWaiting_(threads.filter(function (t) { return waitingIds.indexOf(t.id) >= 0; }));
     let packages = [];
     try {
-      packages = buildPackages_(fetchThreads_(listThreads_(PACKAGE_QUERY, MAX_PACKAGE_FETCH)), nowMs, tz);
+      packages = buildPackages_(threads.filter(function (t) { return packageIds.indexOf(t.id) >= 0; }), nowMs, tz);
     } catch (err) { /* packages are a bonus; keep the waiting list */ }
     const result = { ok: true, waiting: waiting, packages: packages };
     cacheWrite_(cache, 'hl-inbox-v2', result, INBOX_CACHE_SECONDS);
@@ -869,27 +928,54 @@ function pickBriefingName_(names, today) {
   return best;
 }
 
-/** Reads the newest briefing file's text from the "Home Life" folder(s). Returns {name, date, text} or null. */
+/** Drive search for the briefing files of the allowed days: ONE query instead of walking every file of every folder. */
+function briefingQuery_(today) {
+  const titles = [];
+  for (let i = 0; i <= BRIEFING_MAX_AGE_DAYS; i++) titles.push("title = 'home-life-briefing-" + dayShift_(today, -i) + ".json'");
+  return '(' + titles.join(' or ') + ') and trashed = false';
+}
+
+/** Is this file inside a live folder named "Home Life"? One getParents() walk. Errors count as "no". */
+function inBriefingFolder_(file) {
+  try {
+    const parents = file.getParents();
+    while (parents.hasNext()) {
+      const p = parents.next();
+      let trashed = false;
+      try { trashed = typeof p.isTrashed === 'function' && p.isTrashed(); } catch (err) { /* treat as live */ }
+      if (p.getName() === BRIEFING_FOLDER && !trashed) return true;
+    }
+  } catch (err) { /* fall through */ }
+  return false;
+}
+
+/** Reads the newest briefing file's text (a "Home Life" folder, dated within the age window). Returns {name, date, text} or null. */
 function readBriefingFile_(today) {
   const files = {};
-  const trashed = function (x) { try { return typeof x.isTrashed === 'function' && x.isTrashed(); } catch (err) { return false; } };
-  const updated = function (x) { try { return typeof x.getLastUpdated === 'function' ? x.getLastUpdated().getTime() : 0; } catch (err) { return 0; } };
-  const folders = DriveApp.getFoldersByName(BRIEFING_FOLDER);
-  while (folders.hasNext()) {
-    const folder = folders.next();
-    if (trashed(folder)) continue;
-    const it = folder.getFiles();
-    while (it.hasNext()) {
-      const f = it.next();
-      const name = f.getName();
-      if (BRIEFING_FILE_RE.test(name) && !trashed(f)) (files[name] = files[name] || []).push(f);
-    }
+  const it = DriveApp.searchFiles(briefingQuery_(today));
+  while (it.hasNext()) {
+    const f = it.next();
+    const name = f.getName();
+    if (BRIEFING_FILE_RE.test(name)) (files[name] = files[name] || []).push(f);
   }
-  const pick = pickBriefingName_(Object.keys(files), today);
-  if (!pick) return null;
-  // Drive allows duplicate names (a re-run the same day): the newest copy wins.
-  const file = files[pick.name].reduce(function (a, b) { return updated(b) > updated(a) ? b : a; });
-  return { name: pick.name, date: pick.date, text: file.getBlob().getDataAsString('UTF-8') };
+  const updated = function (x) { try { return typeof x.getLastUpdated === 'function' ? x.getLastUpdated().getTime() : 0; } catch (err) { return 0; } };
+  for (;;) {
+    const pick = pickBriefingName_(Object.keys(files), today);
+    if (!pick) return null;
+    let copies = files[pick.name];
+    // Drive allows duplicate names (a re-run the same day): the newest copy wins. Only duplicates cost a getLastUpdated call.
+    if (copies.length > 1) {
+      const stamped = copies.map(function (f) { return { f: f, t: updated(f) }; });
+      stamped.sort(function (a, b) { return b.t - a.t; });
+      copies = stamped.map(function (x) { return x.f; });
+    }
+    for (let i = 0; i < copies.length; i++) {
+      if (inBriefingFolder_(copies[i])) {
+        return { name: pick.name, date: pick.date, text: copies[i].getBlob().getDataAsString('UTF-8') };
+      }
+    }
+    delete files[pick.name]; // not in a "Home Life" folder: try the next-newest name
+  }
 }
 
 function briefingFeature_(nowMs, tz) {
@@ -900,8 +986,12 @@ function briefingFeature_(nowMs, tz) {
   if (!hit || !hit.file || !hit.forDate || hit.forDate < dayShift_(today, -BRIEFING_MAX_AGE_DAYS)) hit = undefined;
   if (!hit) {
     let found;
+    if (cacheRead_(cache, 'hl-briefing-missing-v1')) return { ok: false, error: 'not_found' };
     try { found = readBriefingFile_(today); } catch (err) { return { ok: false, error: shortError_(err) }; }
-    if (!found) return { ok: false, error: 'not_found' };
+    if (!found) {
+      cacheWrite_(cache, 'hl-briefing-missing-v1', true, BRIEFING_MISSING_CACHE_SECONDS);
+      return { ok: false, error: 'not_found' };
+    }
     if (found.text.length > BRIEFING_MAX_BYTES) return { ok: false, error: 'too_big' };
     let data;
     try { data = JSON.parse(found.text); } catch (err) { return { ok: false, error: 'bad_json' }; }
@@ -1066,29 +1156,17 @@ function loadParkList_(cache) {
   return out;
 }
 
-/** Compact schedule: {timezone, schedule:[{date,type,open,close}]}, cached 6 h. */
-function loadSchedule_(cache, parkId) {
-  const key = 'hl-parks-sched-' + parkId;
-  const hit = cacheReadBig_(cache, key);
-  if (hit) return hit;
-  const j = parksGet_('/entity/' + encodeURIComponent(parkId) + '/schedule');
-  const out = {
+function compactSchedule_(j) {
+  return {
     timezone: j && j.timezone ? String(j.timezone) : null,
     schedule: ((j && j.schedule) || []).filter(function (s) { return s && s.date; }).map(function (s) {
       return { date: String(s.date), type: String(s.type || ''), open: s.openingTime || null, close: s.closingTime || null };
     })
   };
-  cacheWriteBig_(cache, key, out, SCHEDULE_CACHE_SECONDS);
-  return out;
 }
 
-/** Compact live data: [{name, type, status, wait, times:[startTime]}], cached 5 min. */
-function loadLive_(cache, parkId) {
-  const key = 'hl-parks-live-' + parkId;
-  const hit = cacheReadBig_(cache, key);
-  if (hit) return hit;
-  const j = parksGet_('/entity/' + encodeURIComponent(parkId) + '/live');
-  const out = ((j && j.liveData) || []).filter(function (e) { return e && e.name; }).map(function (e) {
+function compactLive_(j) {
+  return ((j && j.liveData) || []).filter(function (e) { return e && e.name; }).map(function (e) {
     const stand = e.queue && e.queue.STANDBY;
     return {
       name: String(e.name).slice(0, 80),
@@ -1098,8 +1176,60 @@ function loadLive_(cache, parkId) {
       times: (e.showtimes || []).map(function (t) { return t && t.startTime; }).filter(Boolean).map(String)
     };
   });
+}
+
+/** Compact schedule: {timezone, schedule:[{date,type,open,close}]}, cached 6 h. */
+function loadSchedule_(cache, parkId) {
+  const key = 'hl-parks-sched-' + parkId;
+  const hit = cacheReadBig_(cache, key);
+  if (hit) return hit;
+  const out = compactSchedule_(parksGet_('/entity/' + encodeURIComponent(parkId) + '/schedule'));
+  cacheWriteBig_(cache, key, out, SCHEDULE_CACHE_SECONDS);
+  return out;
+}
+
+/** Compact live data: [{name, type, status, wait, times:[startTime]}], cached 5 min. */
+function loadLive_(cache, parkId) {
+  const key = 'hl-parks-live-' + parkId;
+  const hit = cacheReadBig_(cache, key);
+  if (hit) return hit;
+  const out = compactLive_(parksGet_('/entity/' + encodeURIComponent(parkId) + '/live'));
   cacheWriteBig_(cache, key, out, LIVE_CACHE_SECONDS);
   return out;
+}
+
+/**
+ * Fetches every uncached schedule / live feed in `wanted` ([{kind:'sched'|'live', id}]) in ONE parallel round.
+ * Fills `into.sched[id]` / `into.live[id]` (null on failure, so nothing is retried one by one).
+ */
+function prefetchParks_(cache, wanted, into) {
+  const reqs = [];
+  const meta = [];
+  const seen = {};
+  wanted.forEach(function (w) {
+    const dup = w.kind + '|' + w.id;
+    if (seen[dup]) return;
+    seen[dup] = true;
+    const store = w.kind === 'sched' ? into.sched : into.live;
+    const key = (w.kind === 'sched' ? 'hl-parks-sched-' : 'hl-parks-live-') + w.id;
+    const hit = cacheReadBig_(cache, key);
+    if (hit) { store[w.id] = hit; return; }
+    reqs.push({ url: PARKS_API + '/entity/' + encodeURIComponent(w.id) + '/' + (w.kind === 'sched' ? 'schedule' : 'live'), muteHttpExceptions: true, headers: { Accept: 'application/json' } });
+    meta.push({ w: w, key: key, store: store });
+  });
+  if (reqs.length < 2) return; // nothing to parallelize; the sequential loaders handle a single call
+  let res;
+  try { res = UrlFetchApp.fetchAll(reqs); } catch (err) { return; }
+  res.forEach(function (r, i) {
+    const m = meta[i];
+    try {
+      if (r.getResponseCode() !== 200) throw new Error('themeparks http ' + r.getResponseCode());
+      const j = JSON.parse(r.getContentText());
+      const out = m.w.kind === 'sched' ? compactSchedule_(j) : compactLive_(j);
+      cacheWriteBig_(cache, m.key, out, m.w.kind === 'sched' ? SCHEDULE_CACHE_SECONDS : LIVE_CACHE_SECONDS);
+      m.store[m.w.id] = out;
+    } catch (err) { m.store[m.w.id] = null; }
+  });
 }
 
 /** hours and early entry for a date from a compact schedule. Pure. Either may be null. */
@@ -1173,6 +1303,13 @@ function parksFeature_(events, nowMs, tz) {
   // Each park's schedule and live data are fetched at most once per request (and cached).
   const schedules = {};
   const lives = {};
+  // Namesake parks need every candidate's schedule (for the time zone); everything else needs schedule + live of its park.
+  const wanted = [];
+  pairs.forEach(function (pair) {
+    if (pair.alts && pair.alts.length > 1) pair.alts.forEach(function (a) { wanted.push({ kind: 'sched', id: a.id }); });
+    else { wanted.push({ kind: 'sched', id: pair.park.id }); wanted.push({ kind: 'live', id: pair.park.id }); }
+  });
+  prefetchParks_(cache, wanted, { sched: schedules, live: lives });
   const scheduleFor = function (id) {
     if (!(id in schedules)) { try { schedules[id] = loadSchedule_(cache, id); } catch (err) { schedules[id] = null; } }
     return schedules[id];
