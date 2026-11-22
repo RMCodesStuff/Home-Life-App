@@ -218,10 +218,12 @@ test('narrative: structure, length, trajectory', () => {
   const rn = I.narrative(ctxAt('2026-11-21T09:00', {}, rainyModel(55, 13, 16)));
   assert.match(rn, /rain chances peak at 55% around 1pm, wettest 1 to 4pm/);
   // dry with a little chance
-  assert.match(I.narrative(ctxAt('2026-11-21T09:00', {}, rainyModel(8))), /dry all day, 8% rain at most/);
+  assert.match(I.narrative(ctxAt('2026-11-21T09:00', {}, rainyModel(8))), /(dry|sunny) all day, 8% rain at most/);
+  const gray = clone(raw); gray.daily.weather_code[1] = 3;
+  assert.match(I.narrative(ctxAt('2026-11-21T09:00', {}, mk(gray))), /dry all day, 0% rain every hour/);
   // fast warming
   const fast = clone(raw);
-  fast.hourly.temperature_2m = fast.hourly.temperature_2m.map((v, i) => { const t = fast.hourly.time[i]; const h = +t.slice(11, 13); return t.startsWith('2026-11-21') ? 40 + Math.max(0, Math.min(h - 6, 9)) * 2.5 : v; });
+  fast.hourly.temperature_2m = fast.hourly.temperature_2m.map((v, i) => { const t = fast.hourly.time[i]; const h = +t.slice(11, 13); return t.startsWith('2026-11-21') ? 40 + Math.max(0, Math.min(h - 6, 9)) * 3.5 : v; });
   assert.match(I.narrative(ctxAt('2026-11-21T07:10', {}, mk(fast))), /warms fast: \d+ by 9, \d+ by noon, peak \d+ around 3/);
 });
 
@@ -262,7 +264,51 @@ test('day notes: rain, big change, wind, travel', () => {
   // travel
   const { trip, tripModel, travel } = tripSetup();
   const tctx = { ...ctx, travel, tripModels: { [trip.id]: tripModel } };
-  assert.equal(I.dayNote(tctx, '2026-11-22'), 'you head to santa barbara. 73 & sunny there.'); // depart: tomorrow's forecast there
+  assert.equal(I.dayNote(tctx, '2026-11-22'), 'you head to santa barbara. 76 & sunny there.'); // depart: tomorrow's forecast there
   assert.equal(I.dayNote(tctx, '2026-11-24'), 'in santa barbara. home is 65 & partly cloudy.');
-  assert.equal(I.dayNote(tctx, '2026-11-26'), 'heading home, 58 & rainy there.'.replace('rainy', 'rainy')); // placeholder fixed below
+  assert.equal(I.dayNote(tctx, '2026-11-26'), 'heading home, 49 & overcast there.');
+  assert.equal(I.dayNote(tctx, '2026-11-21'), I.dayNote(ctx, '2026-11-21')); // not a travel day
+  // away days use the trip forecast via modelForDate
+  assert.equal(I.modelForDate(tctx, '2026-11-24'), tripModel);
+  assert.equal(I.modelForDate(tctx, '2026-11-22'), tctx.homeModel); // depart day: you wake up at home
+});
+
+test('event notes use the hour at the event start', () => {
+  const ctx = ctxAt('2026-11-21T07:10', { events: [gym()] });
+  const n = I.eventNote(ctx, gym());
+  assert.match(n, /^\d+° & (sunny|clear|mostly sunny) · (coat|jacket|sweater)$/);
+  const wet = rainyModel(45, 9, 10);
+  assert.match(I.eventNote(ctxAt('2026-11-21T07:10', {}, wet), gym()), /, 45% rain · /);
+  assert.equal(I.eventNote(ctx, { ...gym(), allDay: true }), '');
+});
+
+test('fine print: values and notes', () => {
+  const fp = I.finePrint(ctxAt(NOW));
+  const by = Object.fromEntries(fp.map((x) => [x.key, x]));
+  assert.equal(fp.length, 8);
+  assert.equal(by.sunrise.value, '6:58am');
+  assert.match(by.sunrise.note, /^sunset \d+:\d+pm$/);
+  assert.match(by.daylight.value, /^\d+h \d+m$/);
+  assert.match(by.daylight.note, /min (shorter|longer) tomorrow|about the same/);
+  assert.match(by.wind.value, /^W \d+ mph$/);
+  assert.match(by.pressure.value, /^\d\d\.\d\d in$/);
+  assert.equal(by.dew.note, 'comfortable'); // 46° dew point
+  assert.equal(by.aqi.value, '43');
+  assert.equal(by.aqi.note, 'good, clean air');
+  const noAq = { ...ctxAt(NOW), model: { ...ctxAt(NOW).model, aqi: null } };
+  assert.deepEqual(I.finePrint(noAq).find((x) => x.key === 'aqi'), { key: 'aqi', label: 'air quality', value: '—', note: 'no reading right now' });
+  const metric = normalize(raw, {}, 'metric');
+  assert.match(I.finePrint({ ...ctxAt(NOW, {}, metric), units: 'metric' }).find((x) => x.key === 'pressure').value, /^\d+ hPa$/);
+});
+
+test('writeAll returns every field, lowercase prose, notes for 10 days', () => {
+  const w = I.writeAll(ctxAt('2026-11-21T07:10', { events: [gym()] }));
+  for (const k of ['condition', 'headline_lead', 'headline_accent', 'narrative', 'umbrella', 'wear', 'best_window']) {
+    assert.equal(typeof w[k], 'string'); assert.ok(w[k].length > 0, k);
+    assert.equal(w[k], w[k].toLowerCase(), k);
+  }
+  assert.equal(w.day_notes.length, 10);
+  w.day_notes.forEach((d) => assert.ok(d.note.length > 0 && d.note.length <= 90, d.note));
+  assert.deepEqual(w.event_notes.map((e) => e.id), ['g1']);
+  assert.ok(!/°/.test(w.narrative), 'no degree sign in prose');
 });

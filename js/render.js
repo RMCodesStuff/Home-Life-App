@@ -1,0 +1,336 @@
+// DOM rendering for every card. Takes a prepared `view` (see app.js buildView) and writes HTML.
+import { icon, weatherIcon } from './icons.js';
+import {
+  datePart, hourKey, hourOf, addDays, addHours, dowShort, fmtDateLong, fmtMonthDay, fmtHourShort, fmtClock, toLocal, minutesOfDay,
+} from './time.js';
+import { dayByDate, hoursBetween, nightLow } from './weather.js';
+import { modelForDate } from './insights.js';
+import { yourDay } from './calendar.js';
+
+export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Escape, then turn *one phrase* into <em>. */
+export const prose = (s) => esc(s).replace(/\*([^*]+)\*/g, '<em>$1</em>');
+const r = (v) => (v == null ? '—' : Math.round(v));
+const deg = (v) => (v == null ? '—' : `${Math.round(v)}°`);
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Wall-clock time at the place with `offset` for an epoch ms. */
+export function clockAt(ms, offset) {
+  if (!ms) return '';
+  return fmtClock(toLocal(new Date(ms).toISOString(), offset));
+}
+
+// ---------- temperature colors for range bars (°F stops) ----------
+const STOPS = [[30, [0x86, 0xae, 0xe0]], [50, [0xa9, 0xb8, 0xc4]], [65, [0xd9, 0xa5, 0x8a]], [85, [0xe0, 0x7a, 0x52]], [100, [0xd6, 0x5a, 0x3a]]];
+export function tempColor(f) {
+  if (f <= STOPS[0][0]) return rgb(STOPS[0][1]);
+  for (let i = 1; i < STOPS.length; i++) {
+    if (f <= STOPS[i][0]) {
+      const [a, ca] = STOPS[i - 1]; const [b, cb] = STOPS[i];
+      const t = (f - a) / (b - a);
+      return rgb(ca.map((v, k) => Math.round(v + (cb[k] - v) * t)));
+    }
+  }
+  return rgb(STOPS[STOPS.length - 1][1]);
+}
+const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+
+// ---------- hero ----------
+export function heroHTML(view) {
+  const { status } = view;
+  if (status === 'onboarding') {
+    return `
+      <div class="eyebrow"><span class="eb-icon">${icon('sun', { size: 16 })}</span><span class="eb-text">home life</span>
+        <button class="icon-btn gear" type="button" data-action="open-settings" aria-label="settings">${icon('gear', { size: 20 })}</button></div>
+      <h1 class="hello">Good morning.</h1>
+      <p class="hello-sub">tell me where home is and i'll read the sky for you every morning, and line it up with your day.</p>
+      <div class="picker" id="ob-picker"></div>`;
+  }
+  const s = view.settings;
+  const homeName = (s.home && s.home.name || '').toLowerCase();
+  if (status === 'loading') {
+    return `
+      <div class="eyebrow"><span class="eb-icon">${icon('sun', { size: 16 })}</span><span class="eb-text">${esc(s.homeLabel || 'home')}, ${esc(homeName)}</span>
+        <button class="icon-btn gear" type="button" data-action="open-settings" aria-label="settings">${icon('gear', { size: 20 })}</button></div>
+      <div class="skeleton" aria-hidden="true"><div class="sk t"></div><div class="sk h"></div><div class="sk s"></div><div class="sk"></div><div class="sk xs"></div></div>
+      <p class="reading">reading the sky over ${esc(homeName)}…</p>`;
+  }
+  if (status === 'error') {
+    return `
+      <div class="eyebrow"><span class="eb-icon">${icon('sun', { size: 16 })}</span><span class="eb-text">${esc(s.homeLabel || 'home')}, ${esc(homeName)}</span>
+        <button class="icon-btn gear" type="button" data-action="open-settings" aria-label="settings">${icon('gear', { size: 20 })}</button></div>
+      <div class="err-box"><p>couldn't reach the forecast for ${esc(homeName)}. ${esc(view.wxErrorText || 'check your connection.')}</p>
+      <button class="btn btn-accent" type="button" data-action="retry">${icon('refresh', { size: 16 })} try again</button></div>`;
+  }
+
+  const { ctx, written: w } = view;
+  const m = ctx.model;
+  const today = datePart(ctx.now);
+  const d = dayByDate(m, today) || {};
+  const isDay = m.current.isDay !== 0;
+  const away = view.awayToday;
+  const placeText = away ? `away, ${esc(m.place.name.toLowerCase())}` : `${esc(s.homeLabel || 'home')}, ${esc(homeName)}`;
+  const unit = ctx.units === 'metric' ? '°C' : '°F';
+  const travel = view.calendarConnected
+    ? (view.travelLine ? `<p class="travel">${esc(view.travelLine)}</p>` : '')
+    : '<p class="travel"><button class="text-btn" type="button" data-action="open-settings-calendar">connect your calendar for travel &amp; your day</button></p>';
+  const alerts = (m.alerts || []).slice(0, 3).map((a) => {
+    let until = '';
+    if (a.ends) {
+      const loc = toLocal(a.ends, m.offset);
+      if (loc) until = ` until ${datePart(loc) === today ? fmtClock(loc) : `${dowShort(datePart(loc))} ${fmtClock(loc)}`}`;
+    }
+    return `<details class="alert"${view.alertOpen ? ' open' : ''}><summary>${icon('alert', { size: 18 })}<span>${esc(a.event.toLowerCase())}${esc(until)}</span><span class="more">details</span></summary>
+      <div class="alert-body">${esc(a.headline ? `${a.headline}\n\n` : '')}${esc(a.description)}</div></details>`;
+  }).join('');
+  const fade = view.fade ? ' fade-in' : '';
+  const footParts = [];
+  footParts.push(view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`);
+  footParts.push(view.writtenBy === 'claude' ? 'written by claude' : 'written on-device');
+  if (view.aiNote) footParts.push(`<span class="warn">${esc(view.aiNote)}</span>`);
+
+  return `
+    <div class="eyebrow">
+      <span class="eb-icon">${icon(isDay ? 'sun' : 'moon', { size: 16 })}</span>
+      <span class="eb-text">${esc(fmtDateLong(today))}<span class="dot">·</span>${placeText}</span>
+      <button class="icon-btn gear" type="button" data-action="open-settings" aria-label="settings">${icon('gear', { size: 20 })}</button>
+    </div>
+    ${travel}
+    <div class="bigtemp" aria-label="${r(m.current.temp)} degrees">${r(m.current.temp)}<span class="deg">${unit}</span></div>
+    <div class="cond-row">
+      <span class="big-icon">${weatherIcon(m.current.code, m.current.isDay, { size: 56 })}</span>
+      <div><p class="cond${fade}">${esc(w.condition)}</p>
+      <p class="cond-sub">feels ${deg(m.current.feels)} · high ${deg(d.high)} · low ${deg(d.low)}</p></div>
+    </div>
+    ${alerts}
+    <h1 class="headline${fade}">${esc(w.headline_lead)} <em>${esc(w.headline_accent)}</em></h1>
+    <p class="narrative${fade}">${prose(w.narrative)}</p>
+    <ul class="chips${fade}">
+      <li class="chip">${icon('umbrella', { size: 16 })}<b>umbrella</b><span>${esc(w.umbrella)}</span></li>
+      <li class="chip">${icon('shirt', { size: 16 })}<b>wear</b><span>${esc(w.wear)}</span></li>
+      <li class="chip chip-accent">${icon('sunwindow', { size: 16 })}<b>best window</b><span>${esc(w.best_window)}</span></li>
+    </ul>
+    <div class="hero-foot">
+      <span>${footParts.join(' · ')}</span>
+      <button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button>
+    </div>`;
+}
+
+// ---------- hour by hour ----------
+const COL = 64;
+function smoothPath(pts) {
+  if (pts.length < 2) return pts.length ? `M${pts[0][0]} ${pts[0][1]}` : '';
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i]; const p1 = pts[i]; const p2 = pts[i + 1]; const p3 = pts[i + 2] || p2;
+    const lo = Math.min(p1[1], p2[1]); const hi = Math.max(p1[1], p2[1]);
+    const c1y = Math.min(hi, Math.max(lo, p1[1] + (p2[1] - p0[1]) / 6));
+    const c2y = Math.min(hi, Math.max(lo, p2[1] - (p3[1] - p1[1]) / 6));
+    d += `C${(p1[0] + COL / 3).toFixed(1)} ${c1y.toFixed(1)} ${(p2[0] - COL / 3).toFixed(1)} ${c2y.toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+export function hourlyHTML(view) {
+  const { ctx } = view;
+  const m = ctx.model;
+  const nowH = hourKey(ctx.now);
+  const hours = hoursBetween(m, nowH, addHours(nowH, 24)).filter((h) => h.temp != null);
+  const n = hours.length;
+  const W = n * COL; const H = 112; const top = 32; const bottom = 12;
+  const temps = hours.map((h) => h.temp);
+  const max = Math.max(...temps); const min = Math.min(...temps);
+  const y = (t) => (max === min ? (top + H - bottom) / 2 : top + ((max - t) / (max - min)) * (H - top - bottom));
+  const pts = hours.map((h, i) => [i * COL + COL / 2, y(h.temp)]);
+  const line = smoothPath(pts);
+  const area = n ? `${line}L${pts[n - 1][0]} ${H}L${pts[0][0]} ${H}Z` : '';
+  // night shading
+  let night = '';
+  hours.forEach((h, i) => {
+    if (h.isDay === 0) {
+      const first = i === 0 || hours[i - 1].isDay !== 0; const last = i === n - 1 || hours[i + 1].isDay !== 0;
+      night += `<span class="hnight${first ? ' first' : ''}${last ? ' last' : ''}" style="left:${i * COL}px"></span>`;
+    }
+  });
+  // sunrise / sunset markers
+  const sunMarks = new Map();
+  for (const day of m.days) {
+    if (day.sunrise) sunMarks.set(hourKey(day.sunrise), `sunrise ${fmtClock(day.sunrise).replace(/(am|pm)$/, '')}`);
+    if (day.sunset) sunMarks.set(hourKey(day.sunset), `sunset ${fmtClock(day.sunset).replace(/(am|pm)$/, '')}`);
+  }
+  const cols = `grid-template-columns: repeat(${n}, ${COL}px)`;
+  const grad = 'hgrad';
+  const svg = `
+    <svg class="hchart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true">
+      <defs><linearGradient id="${grad}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="area-top"/><stop offset="1" class="area-bot"/></linearGradient></defs>
+      <path d="${area}" fill="url(#${grad})"/>
+      <path class="line" d="${line}"/>
+      ${pts.map(([x, yy], i) => `<circle class="pt" cx="${x}" cy="${yy.toFixed(1)}" r="3.5"/><text class="tl" x="${x}" y="${(yy - 11).toFixed(1)}">${Math.round(temps[i])}°</text>`).join('')}
+    </svg>`;
+  const iconsRow = hours.map((h) => `<span>${weatherIcon(h.code, h.isDay, { size: 22 })}</span>`).join('');
+  const rainRow = hours.map((h) => `<span class="${(h.precipProb ?? 0) >= 10 ? 'wet' : ''}">${h.precipProb ?? 0}%</span>`).join('');
+  const labelRow = hours.map((h, i) => `<span class="${i === 0 ? 'now' : ''}">${fmtHourShort(hourOf(h.time))}</span>`).join('');
+  const sunRow = hours.map((h) => `<span>${esc(sunMarks.get(h.time) || '')}</span>`).join('');
+  const sr = `${hours.map((h) => `${fmtHourShort(hourOf(h.time))} ${Math.round(h.temp)} degrees, ${h.precipProb ?? 0}% rain`).join('; ')}`;
+  return `
+    <div class="card-head"><h2>Hour by hour</h2>
+      <p class="sub">open-meteo hourly, ${esc(m.place.name.toLowerCase())}, updated ${esc(clockAt(view.wxFetchedAt, m.offset))}</p></div>
+    <hr class="rule">
+    <div class="hstrip" tabindex="0" role="group" aria-label="next 24 hours, scroll sideways">
+      <p class="vh">${esc(sr)}</p>
+      <div class="hinner" style="width:${W}px">
+        ${night}
+        ${svg}
+        <div class="hrow hicons" style="${cols}">${iconsRow}</div>
+        <div class="hrow hrain" style="${cols}">${rainRow}</div>
+        <div class="hrow hlabels" style="${cols}">${labelRow}</div>
+        <div class="hrow hsun" style="${cols}">${sunRow}</div>
+      </div>
+    </div>
+    <p class="foot-note">blue figures are the chance of rain each hour. scroll for more.</p>
+    <div class="yourday">${yourDayHTML(view)}</div>`;
+}
+
+// ---------- your day ----------
+function firstSegment(loc) {
+  return String(loc || '').split(',')[0].trim();
+}
+function eventRow(view, ev, isNext, notes) {
+  const now = view.ctx.now;
+  const ongoing = ev.ls <= now && ev.le > now;
+  const m = modelForDate(view.ctx, ev.date);
+  const h = m.hours.find((x) => x.time === hourKey(ev.ls));
+  const note = notes.get(ev.id);
+  const loc = /^https?:|zoom\.us|meet\.google|teams\.microsoft|webex/i.test(ev.location) ? '' : firstSegment(ev.location);
+  return `<li class="ev${isNext ? ' next' : ''}${ongoing ? ' now' : ''}">
+    <div class="ev-time"><span class="t">${ongoing ? 'now' : esc(fmtClock(ev.ls))}</span><span class="d">${esc(dowShort(ev.date))}</span></div>
+    <span class="ev-dot" aria-hidden="true"></span>
+    <div class="ev-body"><p class="ev-title">${esc(ev.title)}</p>${loc ? `<p class="ev-loc">${esc(loc)}</p>` : ''}
+    ${note ? `<p class="ev-wx${view.fade ? ' fade-in' : ''}">${h ? weatherIcon(h.code, h.isDay, { size: 16 }) : ''}<span>${esc(note)}</span></p>` : ''}</div>
+  </li>`;
+}
+
+export function yourDayHTML(view) {
+  const head = (right) => `<div class="sec-head"><h2>Your day</h2>${right}</div>`;
+  if (!view.calendarConnected) {
+    return `${head('<button class="text-btn" type="button" data-action="open-settings-calendar">connect calendar</button>')}
+      <div class="day-empty"><p>connect your google calendar and each event shows up here with the weather at that hour. it also spots trips, so the week uses the forecast where you'll be.</p>
+      <button class="btn" type="button" data-action="open-settings-calendar">${icon('calendar', { size: 16 })} connect calendar</button></div>`;
+  }
+  const errNote = view.calErrorText ? `<p class="cal-note">${esc(view.calErrorText)}${view.calFetchedAt ? ` · showing ${esc(clockAt(view.calFetchedAt, view.ctx.model.offset))}` : ''}</p>` : '';
+  if (!view.hasCalendarData) {
+    return `${head('<span class="sub-right">calendar</span>')}<div class="day-empty"><p>${esc(view.calErrorText || 'checking your calendar…')}</p>
+      ${view.calErrorText ? `<button class="btn" type="button" data-action="open-settings-calendar">${icon('gear', { size: 16 })} calendar settings</button>` : ''}</div>`;
+  }
+  const v = yourDay(view.ctx.events, view.ctx.now);
+  const notes = new Map((view.written.event_notes || []).map((x) => [x.id, x.note]));
+  const chips = v.chips.length ? `<div class="allday">${v.chips.map((c) => `<span class="ad-chip">${icon('calendar', { size: 14 })}<span>${esc(c.title)}</span></span>`).join('')}</div>` : '';
+  const earlier = v.earlier ? `<p class="earlier">${v.earlier} earlier today</p>` : '';
+  let list = v.upcoming.map((e) => eventRow(view, e, v.next && e.id === v.next.id, notes)).join('');
+  if (!v.upcoming.length && !v.tomorrow.length) {
+    return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}
+      <p class="day-empty">${v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}`;
+  }
+  if (!v.upcoming.length) list += '<li class="ev-label" style="padding-left:0">nothing else today</li>';
+  if (v.tomorrow.length) {
+    list += `<li class="ev-label">tomorrow</li>${v.tomorrow.slice(0, 4).map((e, i) => eventRow(view, e, !v.upcoming.length && i === 0, notes)).join('')}`;
+  }
+  return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}<ol class="timeline">${list}</ol>${errNote}`;
+}
+
+// ---------- the week ----------
+export function weekHTML(view) {
+  const { ctx, written } = view;
+  const today = datePart(ctx.now);
+  const notes = new Map((written.day_notes || []).map((x) => [x.date, x.note]));
+  const toF = (v) => (ctx.units === 'metric' ? (v * 9) / 5 + 32 : v);
+  const rows = [];
+  for (let i = 0; i < 10; i++) {
+    const date = addDays(today, i);
+    const m = modelForDate(ctx, date);
+    const d = dayByDate(m, date);
+    if (!d) continue;
+    const lo = nightLow(m, date);
+    const info = ctx.travel ? ctx.travel.dayInfo(date) : null;
+    const tag = info && info.trip && (info.where === 'away' || info.flag === 'depart') ? info.trip.city.toLowerCase() : '';
+    rows.push({ date, d, lo, hi: d.high, info, tag, away: info && info.where === 'away' });
+  }
+  const vals = rows.flatMap((x) => [x.lo, x.hi]).filter((v) => v != null);
+  const gmin = Math.min(...vals); const gmax = Math.max(...vals);
+  const pct = (v) => (gmax === gmin ? 50 : ((v - gmin) / (gmax - gmin)) * 100);
+  const fade = view.fade ? ' fade-in' : '';
+  const html = rows.map((x, i) => {
+    const lo = x.lo ?? x.d.low; const hi = x.hi;
+    const left = pct(Math.min(lo, hi)); const right = 100 - pct(Math.max(lo, hi));
+    const fill = `left:${left.toFixed(1)}%;right:${right.toFixed(1)}%;background:linear-gradient(90deg, ${tempColor(toF(lo))}, ${tempColor(toF(hi))})`;
+    const p = x.d.precipProbMax ?? 0;
+    const name = i === 0 ? 'Today' : cap(dowShort(x.date));
+    const tagText = x.tag ? (x.info.flag === 'depart' ? `→ ${x.tag}` : x.tag) : '';
+    return `<li class="wrow${x.away ? ' away' : ''}">
+      <div class="wday"><span class="wname">${name}</span><span class="wdate">${esc(fmtMonthDay(x.date))}</span>${tagText ? `<span class="wtag">${esc(tagText)}</span>` : ''}</div>
+      <span class="wicon">${weatherIcon(x.d.code, 1, { size: 30 })}</span>
+      <span class="wrain">${p >= 20 ? `${p}%` : ''}</span>
+      <span class="wlo">${deg(lo)}</span>
+      <span class="wbar" aria-hidden="true"><span class="wfill" style="${fill}"></span></span>
+      <span class="whi">${deg(hi)}</span>
+      ${notes.get(x.date) ? `<p class="wnote${fade}">${prose(notes.get(x.date))}</p>` : ''}
+    </li>`;
+  }).join('');
+  return `<div class="sec-head"><h2>The week</h2><span class="sub-right">high &amp; that night's low</span></div>
+    <hr class="rule"><ol class="wk">${html}</ol>`;
+}
+
+// ---------- the fine print ----------
+export function fineHTML(view) {
+  const { ctx, written } = view;
+  const m = ctx.model;
+  const today = datePart(ctx.now);
+  const d = dayByDate(m, today) || {};
+  const tomorrow = dayByDate(m, addDays(today, 1));
+  const cx = 300; const cy = 118; const rx = 262; const ry = 96;
+  const ptAt = (f) => [cx - rx * Math.cos(Math.PI * f), cy - ry * Math.sin(Math.PI * f)];
+  let arc = ''; let nightNote = '';
+  if (d.sunrise && d.sunset) {
+    const now = minutesOfDay(ctx.now); const sr = minutesOfDay(d.sunrise); const ss = minutesOfDay(d.sunset);
+    const up = ctx.now >= d.sunrise && ctx.now < d.sunset;
+    if (up) {
+      const f = Math.max(0, Math.min(1, (now - sr) / (ss - sr)));
+      const [px, py] = ptAt(f);
+      arc = `<path class="arc" d="M${cx - rx} ${cy} A${rx} ${ry} 0 0 1 ${px.toFixed(1)} ${py.toFixed(1)}"/>
+        <path class="arc ahead" d="M${px.toFixed(1)} ${py.toFixed(1)} A${rx} ${ry} 0 0 1 ${cx + rx} ${cy}"/>
+        <circle class="glow" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="15"/><circle class="sun" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="6.5"/>`;
+    } else {
+      arc = `<path class="arc night" d="M${cx - rx} ${cy} A${rx} ${ry} 0 0 1 ${cx + rx} ${cy}"/>`;
+      const rise = ctx.now < d.sunrise ? d.sunrise : tomorrow && tomorrow.sunrise;
+      nightNote = `<p class="sun-night">sun's down${rise ? ` · rises ${esc(fmtClock(rise))}` : ''}</p>`;
+    }
+  }
+  const svg = `<svg class="sunarc" viewBox="0 0 600 128" aria-hidden="true">
+      <line class="horizon" x1="0" y1="${cy}" x2="600" y2="${cy}"/>
+      <line class="tick" x1="${cx - rx}" y1="${cy - 5}" x2="${cx - rx}" y2="${cy + 5}"/><line class="tick" x1="${cx + rx}" y1="${cy - 5}" x2="${cx + rx}" y2="${cy + 5}"/>
+      ${arc}
+    </svg>`;
+  const stats = (written.fine || []).map((s) => `<div class="stat"><dt>${esc(s.label)}</dt><dd class="sv">${esc(s.value)}</dd><dd class="sn">${esc(s.note)}</dd></div>`).join('');
+  const curTime = m.current.time ? fmtClock(m.current.time) : clockAt(view.wxFetchedAt, m.offset);
+  return `<div class="card-head"><h2>The fine print</h2><p class="sub">open-meteo current, ${esc(curTime)}</p></div>
+    <div class="sunwrap">${svg}${nightNote}
+      <div class="sun-ends"><span><b>${esc(d.sunrise ? fmtClock(d.sunrise) : '—')}</b>sunrise</span><span class="r"><b>${esc(d.sunset ? fmtClock(d.sunset) : '—')}</b>sunset</span></div>
+    </div>
+    <hr class="rule">
+    <dl class="stats">${stats}</dl>`;
+}
+
+// ---------- all ----------
+export function renderAll(view, els) {
+  const strip = els.hourly.querySelector('.hstrip');
+  const scrollLeft = strip ? strip.scrollLeft : 0;
+  els.hero.innerHTML = heroHTML(view);
+  const ready = view.status === 'ready';
+  for (const k of ['hourly', 'week', 'fine']) els[k].hidden = !ready;
+  if (!ready) return;
+  els.hourly.innerHTML = hourlyHTML(view);
+  els.week.innerHTML = weekHTML(view);
+  els.fine.innerHTML = fineHTML(view);
+  const s2 = els.hourly.querySelector('.hstrip');
+  if (s2 && scrollLeft && !view.resetScroll) s2.scrollLeft = scrollLeft;
+}
