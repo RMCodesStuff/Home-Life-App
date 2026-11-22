@@ -25,8 +25,26 @@ function formatDate(d, tz, fmt) {
   return `${date}T${parts.hour}:${parts.minute}:${parts.second}${sign}${oh}:${om}`;
 }
 
+// Apps Script style iterator
+function iter(arr) { let i = 0; return { hasNext: () => i < arr.length, next: () => arr[i++] }; }
+// Utilities.parseDate(text, tz, 'yyyy-MM-dd HH:mm'): find the instant whose wall clock in tz reads `text`
+function parseDateIn(text, tz) {
+  const [d, t] = text.split(' ');
+  const [y, mo, da] = d.split('-').map(Number);
+  const [h, mi] = t.split(':').map(Number);
+  const guess = Date.UTC(y, mo - 1, da, h, mi);
+  let ms = guess;
+  for (let i = 0; i < 3; i++) {
+    const f = formatDate(new Date(ms), tz, "yyyy-MM-dd'T'HH:mm:ssXXX");
+    const off = f.slice(-6);
+    const sign = off[0] === '-' ? -1 : 1;
+    ms = guess - sign * (Number(off.slice(1, 3)) * 60 + Number(off.slice(4))) * 60000;
+  }
+  return new Date(ms);
+}
+
 /** Build a fresh script context. `world` lets each test script the outside world. */
-function load({ source = SECRET_SRC, props = {}, calendars = [], fetchHandler = () => ({ code: 404, body: '{}' }), directions = () => null } = {}) {
+function load({ source = SECRET_SRC, props = {}, calendars = [], fetchHandler = () => ({ code: 404, body: '{}' }), directions = () => null, driveFolders = [] } = {}) {
   const store = new Map();
   const cacheStore = new Map();
   const propStore = { ...props };
@@ -35,7 +53,8 @@ function load({ source = SECRET_SRC, props = {}, calendars = [], fetchHandler = 
   let uuid = 0;
   const sandbox = {
     Session: { getScriptTimeZone: () => TZ },
-    Utilities: { formatDate, getUuid: () => `uuid-${++uuid}` },
+    Utilities: { formatDate, getUuid: () => `uuid-${++uuid}`, parseDate: parseDateIn },
+    DriveApp: { getFoldersByName: (name) => iter(driveFolders.filter((f) => f.name === name).map((f) => ({ getFiles: () => iter(f.files) }))) },
     CacheService: {
       getScriptCache: () => ({
         get: (k) => (cacheStore.has(k) ? cacheStore.get(k) : null),
@@ -92,7 +111,7 @@ test('Code.gs has exactly one secret placeholder and parses', () => {
   assert.equal(SRC.split('__PASTE_SECRET_HERE__').length - 1, 1);
   assert.match(SRC, /const SECRET = '__PASTE_SECRET_HERE__';/);
   assert.doesNotThrow(() => new vm.Script(SRC));
-  for (const name of ['ENABLE_GMAIL', 'ENABLE_LEAVE_BY', 'DEFAULT_DAYS']) assert.ok(SRC.includes(`const ${name}`), name);
+  for (const name of ['ENABLE_GMAIL', 'ENABLE_LEAVE_BY', 'ENABLE_BRIEFING', 'ENABLE_PARKS', 'ENABLE_TRIP_DRIVE', 'ENABLE_BIRTHDAYS', 'DEFAULT_DAYS']) assert.ok(SRC.includes(`const ${name}`), name);
 });
 
 test('appsscript.json is valid, read-only, and has the time zone placeholder', () => {
@@ -104,9 +123,11 @@ test('appsscript.json is valid, read-only, and has the time zone placeholder', (
   assert.deepEqual(m.oauthScopes, [
     'https://www.googleapis.com/auth/calendar.readonly',
     'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/contacts.readonly',
     'https://www.googleapis.com/auth/script.external_request',
   ]);
-  assert.ok(!m.oauthScopes.some((s) => /gmail\.(modify|send|compose)|mail\.google\.com|calendar$/.test(s)));
+  assert.ok(!m.oauthScopes.some((s) => /gmail\.(modify|send|compose)|mail\.google\.com|calendar$|auth\/drive$|drive\.file|contacts$/.test(s)));
   assert.ok(raw.replace('__TIME_ZONE__', 'America/Denver').includes('America/Denver'));
 });
 
@@ -386,7 +407,7 @@ test('doGet: a wrong or missing key is unauthorized and never leaks tokens or to
   assert.equal(w.mapsLog.length, 0);
 });
 
-test('doGet: v2 response shape with events, travel, inbox and oura; no secrets in the body', () => {
+test('doGet: v2 fields are all still present, with version 3;  events, travel, inbox and oura; no secrets in the body', () => {
   const start = Date.now() + 2 * 3600000;
   const cal = fakeCal([
     fakeEvent({ id: 'ev1', title: 'Chapel meetup', startMs: start, endMs: start + 3600000, location: '1 Chapel Rd, Denver, CO' }),
@@ -398,6 +419,8 @@ test('doGet: v2 response shape with events, travel, inbox and oura; no secrets i
     if (url.includes('/threads?q=')) return { code: 200, body: { threads: [{ id: 'p1' }] } };
     if (url.includes('/threads/w1')) return { code: 200, body: thread('w1', msg(Date.now() - 3600000, 'Little Shop <hi@littleshop.example>', 'Please confirm your pickup', 'Please confirm your pickup time')) };
     if (url.includes('/threads/p1')) return { code: 200, body: thread('p1', msg(Date.now() - 1800000, 'Northwind Orders <o@northwind.example>', 'Out for delivery', 'Arriving today')) };
+    if (url.includes('/destinations')) return { code: 200, body: { destinations: [{ id: 'd1', name: 'Somewhere', parks: [{ id: 'p-fake', name: 'Fake Land Park' }] }] } };
+    if (url.includes('people.googleapis.com')) return { code: 200, body: { connections: [] } };
     if (url.includes('daily_readiness')) return { code: 200, body: { data: [rd('2026-11-22', 64)] } };
     if (url.includes('daily_sleep')) return { code: 200, body: { data: [ds('2026-11-22', 84)] } };
     if (url.includes('/usercollection/sleep')) return { code: 200, body: { data: [sl('2026-11-22')] } };
@@ -407,9 +430,9 @@ test('doGet: v2 response shape with events, travel, inbox and oura; no secrets i
   const out = w.call('doGet', { parameter: { key: KEY, days: '3', from: '39.7400,-104.9900' } });
   const body = JSON.parse(out.text);
   assert.equal(body.ok, true);
-  assert.equal(body.version, 2);
+  assert.equal(body.version, 3);
   assert.equal(body.timeZone, TZ);
-  assert.deepEqual(body.features, { gmail: true, leaveBy: true, oura: true });
+  assert.deepEqual(body.features, { gmail: true, leaveBy: true, oura: true, briefing: true, parks: true, tripDrive: true, birthdays: true });
   assert.equal(body.events.length, 1);
   assert.equal(body.events[0].travel.minutes, 22);
   assert.equal(body.events[0].travel.miles, 9.8);
@@ -450,11 +473,15 @@ test('doGet: no from param means no leave-by; features fail independently and re
 });
 
 test('doGet: disabled features are reported as disabled', () => {
-  const src = SECRET_SRC.replace('const ENABLE_GMAIL = true', 'const ENABLE_GMAIL = false').replace('const ENABLE_LEAVE_BY = true', 'const ENABLE_LEAVE_BY = false');
+  const src = SECRET_SRC.replace('const ENABLE_GMAIL = true', 'const ENABLE_GMAIL = false').replace('const ENABLE_LEAVE_BY = true', 'const ENABLE_LEAVE_BY = false')
+    .replace('const ENABLE_BRIEFING = true', 'const ENABLE_BRIEFING = false').replace('const ENABLE_PARKS = true', 'const ENABLE_PARKS = false')
+    .replace('const ENABLE_TRIP_DRIVE = true', 'const ENABLE_TRIP_DRIVE = false').replace('const ENABLE_BIRTHDAYS = true', 'const ENABLE_BIRTHDAYS = false');
   const start = Date.now() + 3600000;
   const w = load({ source: src, calendars: [fakeCal([fakeEvent({ id: 'e', title: 'x', startMs: start, endMs: start + 1, location: '1 A St' })])], directions: () => route(600) });
-  const body = JSON.parse(w.call('doGet', { parameter: { key: KEY, from: '39.74,-104.99' } }).text);
+  const body = JSON.parse(w.call('doGet', { parameter: { key: KEY, from: '39.74,-104.99', trip: '33.8,-117.9', tripDate: '2026-11-23' } }).text);
   assert.deepEqual(body.inbox, { ok: false, error: 'disabled' });
+  for (const k of ['briefing', 'parks', 'tripDrive', 'birthdays']) assert.deepEqual(body[k], { ok: false, error: 'disabled' }, k);
+  assert.deepEqual(body.features, { gmail: false, leaveBy: false, oura: false, briefing: false, parks: false, tripDrive: false, birthdays: false });
   assert.equal(body.features.gmail, false);
   assert.equal(body.features.leaveBy, false);
   assert.equal(w.mapsLog.length, 0);
