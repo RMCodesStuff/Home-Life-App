@@ -3,7 +3,7 @@
 //   { now: 'YYYY-MM-DDTHH:mm' (wall clock at the primary location), units, model (primary), homeModel,
 //     tripModels: {tripId: model}, travel: {trips, dayInfo}|null, events: localized events }
 // Temperatures are shown in the user's units; thresholds are evaluated in °F / mph internally.
-import { addDays, datePart, hourOf, hourKey, addHours, dowShort, fmtClock, fmtHourPlain, meridiem, fmtDuration, hashStr } from './time.js';
+import { addDays, datePart, hourOf, hourKey, addHours, dowShort, fmtClock, fmtHourPlain, meridiem, fmtDuration, fmtMinutes, diffMinutes, hashStr } from './time.js';
 import { dayByDate, hoursBetween, nightLow, hourAt } from './weather.js';
 import { EMPTY_TRAVEL } from './travel.js';
 import { shortTitle } from './calendar.js';
@@ -412,7 +412,7 @@ export function bestWindow(ctx) {
   const temps = best.blk.map((h) => r(h.temp));
   const lo = Math.min(...temps); const hi = Math.max(...temps);
   const start = meridiem(a) === meridiem(b) ? String(a % 12 || 12) : fmtClock(a);
-  return `${prefix}${start} to ${fmtClock(b)}, ${lo === hi ? `${lo}°` : `${lo} to ${hi}°`}`;
+  return withEasyPace(`${prefix}${start} to ${fmtClock(b)}, ${lo === hi ? `${lo}°` : `${lo} to ${hi}°`}`, ctx.oura);
 }
 
 // ---------- week notes ----------
@@ -506,6 +506,88 @@ export function eventNote(ctx, ev) {
   return `${s} · ${w[2]}`;
 }
 
+// ---------- leave-by, inbox, packages, last night ----------
+/** "7:33" when the departure shares am/pm with the event, else "7:33am"; noon and midnight stay words. */
+export function leaveClock(leaveLs, eventLs) {
+  const c = fmtClock(leaveLs);
+  if (c === 'noon' || c === 'midnight' || !eventLs) return c;
+  return meridiem(hr(leaveLs)) === meridiem(hr(eventLs)) ? c.replace(/(am|pm)$/, '') : c;
+}
+
+/** "leave by 7:33 · 22 min drive", plus a wet-roads nudge at 40% rain or more when leaving. `hours` = that day's model hours. */
+export function leaveNote(event, hours) {
+  const t = event && event.travel;
+  if (!t || !t.leaveBy) return '';
+  let s = `leave by ${leaveClock(t.leaveBy, event.ls)} · ${fmtMinutes(t.minutes)} drive`;
+  const h = (hours || []).find((x) => x.time === hourKey(t.leaveBy));
+  if (h && (h.precipProb ?? 0) >= 40) s += ' · wet roads, add a few minutes';
+  return s;
+}
+
+/** Hero chip: the next timed event with a drive, when it starts within 4 hours. */
+export function leaveChip(ctx) {
+  const ev = (ctx.events || []).filter((e) => !e.allDay && e.travel && e.travel.leaveBy && e.ls >= ctx.now).sort((a, b) => a.ls.localeCompare(b.ls))[0];
+  if (!ev || diffMinutes(ctx.now, ev.ls) > 240) return '';
+  const when = ev.travel.leaveBy > ctx.now ? leaveClock(ev.travel.leaveBy, ev.ls) : 'now';
+  return `leave ${when} for ${shortTitle(ev.title)}, ${ev.travel.minutes} min`;
+}
+
+const clip = (s, n) => (s.length <= n ? s : `${s.slice(0, n - 1).trimEnd()}…`);
+/** Hero chip: "2 waiting on you · little shop asks you to confirm" (60 characters at most). */
+export function inboxChip(inbox) {
+  if (!inbox || !inbox.ok || !inbox.waiting || !inbox.waiting.length) return '';
+  const first = inbox.waiting[0];
+  return clip(`${inbox.waiting.length} waiting on you · ${lc(first.from)} ${lc(first.reason)}`, 60);
+}
+
+/** "northwind package out for delivery", paired with the day's weather when it is on its way today. */
+export function packageNote(pkg, ctx) {
+  let s = `${lc(pkg.merchant) || 'a'} package ${pkg.status}`;
+  if (pkg.status !== 'arriving today' && pkg.status !== 'out for delivery') return s;
+  const today = datePart(ctx.now);
+  const m = ctx.model;
+  const from = ctx.now > `${today}T10:00` ? hourKey(ctx.now) : `${today}T10:00`;
+  const hs = hoursBetween(m, from, `${today}T18:00`);
+  const wet = hs.find((h) => (h.precipProb ?? 0) >= 40);
+  if (wet) return `${s}, rain after ${fmtClock(hr(wet.time))}, grab it early`;
+  const feels = hs.map((h) => h.feels ?? h.temp).filter((v) => v != null);
+  const hi = maxOf(feels);
+  if (hi != null && toF(hi, ctx.units) >= 100) return `${s}, porch hits ${r(hi)}, bring it in early`;
+  const night = nightLow(m, today);
+  if (night != null && toF(night, ctx.units) <= 32) return `${s}, below freezing tonight`;
+  return s;
+}
+
+export const easyPace = (oura) => !!(oura && oura.ok && oura.readiness && oura.readiness.score != null && oura.readiness.score < 70);
+export const withEasyPace = (text, oura) => (easyPace(oura) && text && !/easy pace/.test(text) && !/^no clean window/.test(text) ? `${text} · easy pace` : text);
+
+/** One or two lowercase sentences about last night, from the Oura data. `weather` and `events` are accepted for future tailoring. */
+export function bodyNote(oura, weather, events) { // eslint-disable-line no-unused-vars
+  if (!oura || !oura.ok) return '';
+  const score = oura.readiness && oura.readiness.score;
+  const avg = oura.week && oura.week.readinessAvg;
+  const out = [];
+  if (score != null) {
+    if (score >= 85) out.push(`readiness ${score}, you're primed. good day to push it.`);
+    else if (score >= 70) {
+      if (avg == null) out.push(`readiness ${score}, steady enough.`);
+      else if (Math.abs(score - avg) <= 5) out.push(`readiness ${score}, about your usual.`);
+      else out.push(`readiness ${score}, ${score > avg ? 'up' : 'down'} from your usual ${avg}.`);
+    } else out.push(avg == null ? `readiness ${score}, on the low side. keep it easy today.` : `readiness ${score}, lower than your usual ${avg}. keep it easy today.`);
+  }
+  const total = oura.sleep && oura.sleep.totalSec;
+  let diff = '';
+  if (total != null) {
+    const usual = oura.week && oura.week.totalSecAvg;
+    const dm = usual != null ? (total - usual) / 60 : 0;
+    if (Math.abs(dm) >= 30) diff = `, ${fmtMinutes(dm)} ${dm > 0 ? 'more' : 'less'} than usual`;
+  }
+  const sleepClause = (withDiff) => `slept ${fmtDuration(total)}${withDiff ? diff : ''}.`;
+  let text = [...out, ...(total != null ? [sleepClause(true)] : [])].join(' ');
+  if (text.length > 140 && total != null) text = [...out, sleepClause(false)].join(' ');
+  return text.length > 140 ? clip(text, 140) : text;
+}
+
 // ---------- fine print ----------
 const uvBand = (u) => (u < 3 ? 'low' : u < 6 ? 'moderate' : u < 8 ? 'high' : u < 11 ? 'very high' : 'extreme');
 const dewNote = (f) => (f < 40 ? 'dry & crisp' : f < 55 ? 'comfortable' : f < 65 ? 'a little sticky' : f < 70 ? 'humid' : 'muggy');
@@ -597,6 +679,11 @@ export function writeAll(ctx) {
     umbrella: umbrella(ctx),
     wear: wear(ctx),
     best_window: bestWindow(ctx),
+    leave_chip: leaveChip(ctx),
+    inbox_chip: inboxChip(ctx.inbox),
+    body_note: bodyNote(ctx.oura, ctx.model, ctx.events),
+    package_notes: ((ctx.inbox && ctx.inbox.ok && ctx.inbox.packages) || []).map((p) => ({ id: p.id, note: packageNote(p, ctx) })),
+    leave_notes: evs.filter((e) => e.travel).map((e) => ({ id: e.id, note: leaveNote(e, modelForDate(ctx, e.date).hours) })),
     day_notes: dates.map((date) => ({ date, note: dayNote(ctx, date) })),
     event_notes: evs.map((e) => ({ id: e.id, note: eventNote(ctx, e) })),
     fine: finePrint(ctx),

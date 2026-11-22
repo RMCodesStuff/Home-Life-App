@@ -51,6 +51,11 @@ const P = {
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   'arrow-right': '<path d="M5 12h14M13 6l6 6-6 6"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  car: '<path d="M4.5 17v-4.2l1.9-4.6A2 2 0 0 1 8.3 7h7.4a2 2 0 0 1 1.9 1.2l1.9 4.6V17z"/><path d="M4.5 12.8h15M7 17v2M17 17v2M8 15.1v.1M16 15.1v.1"/>',
+  inbox: '<path d="M3.5 13.5l2.4-7.4a2 2 0 0 1 1.9-1.4h8.4a2 2 0 0 1 1.9 1.4l2.4 7.4"/><path d="M3.5 13.5v4.8A1.5 1.5 0 0 0 5 19.8h14a1.5 1.5 0 0 0 1.5-1.5v-4.8h-5.2a3.3 3.3 0 0 1-6.6 0z"/>',
+  box: '<path d="M12 3.5l8 4v9l-8 4-8-4v-9z"/><path d="M4 7.5l8 4 8-4M12 11.5v9"/>',
+  'moon-sleep': '<path d="M17.8 14.6A7 7 0 1 1 9.4 6.2a5.6 5.6 0 0 0 8.4 8.4z"/><path d="M14.2 3.8h4l-4 4.2h4"/>',
+  ring: '<circle cx="12" cy="14.2" r="6.2"/><circle cx="12" cy="14.2" r="3.7"/><path d="M9.7 6.4L12 3.4l2.3 3"/>',
 };
 
 export function icon(name, { size = 24, className = '', title = '' } = {}) {

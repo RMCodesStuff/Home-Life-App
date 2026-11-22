@@ -17,9 +17,9 @@ const str = { type: 'string' };
 export const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['condition', 'headline_lead', 'headline_accent', 'narrative', 'umbrella', 'wear', 'best_window', 'day_notes', 'event_notes'],
+  required: ['condition', 'headline_lead', 'headline_accent', 'narrative', 'umbrella', 'wear', 'best_window', 'body_note', 'day_notes', 'event_notes'],
   properties: {
-    condition: str, headline_lead: str, headline_accent: str, narrative: str, umbrella: str, wear: str, best_window: str,
+    condition: str, headline_lead: str, headline_accent: str, narrative: str, umbrella: str, wear: str, best_window: str, body_note: str,
     day_notes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['date', 'note'], properties: { date: str, note: str } } },
     event_notes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['id', 'note'], properties: { id: str, note: str } } },
   },
@@ -44,8 +44,11 @@ fields
 - umbrella: at most 60 characters. starts with yes, no, or probably not, then the percent and when.
 - wear: at most 60 characters. what to put on, tied to the first morning event if there is one.
 - best_window: at most 60 characters, the best stretch outside, like "12 to 4pm, 59 to 62°".
+- body_note: at most 140 characters, empty string when facts.oura is null. one or two plain sentences about last night from facts.oura: readiness, how long they slept, and how that compares with their usual (the week averages). readiness 85 or more reads as primed; 70 to 84 as about their usual unless it differs from the week average by more than 5; under 70 as lower than usual, keep it easy today. never medical advice, never alarming, no diagnoses. if readiness is under 70, the best_window may end with " · easy pace".
 - day_notes: one entry for every date in facts.days, same date strings. each at most 90 characters, one or two clauses, one thing worth knowing about that day. if the person is traveling that day, say where and how it compares to home.
-- event_notes: one entry for every event in facts.events that is not all-day, same ids. at most 60 characters: the temperature at the start and what to wear or bring.
+- event_notes: one entry for every event in facts.events that is not all-day, same ids. at most 60 characters: the temperature at the start and what to wear or bring. an event with a travel entry may mention when to leave ("leave by 7:33"), using only travel.leave_by and travel.minutes.
+
+facts.inbox (count and up to 3 items) and facts.packages are things waiting on the person. the narrative may mention a package or something waiting only if it pairs naturally with the weather (a package arriving before the rain, say). otherwise leave them out: the app shows them as chips and a list.
 
 facts.on_device is a plainer version written by a program. use it only as a reference for format and length. improve on its phrasing; do not copy it, and do not contradict its numbers.
 
@@ -53,6 +56,26 @@ style sample (a different day, for tone only)
 condition "clear & still"; headline_lead "62° & sunny,"; headline_accent "another clean blue day"; narrative "about 43 & clear at 7, feels 39. central park read 49 at 2:51am. sunny all day, 0% rain every hour, light west wind 6 to 7 mph. warms fast: 48 by 9, 59 by noon, peak 62 around 3, sundown about 4:35, then a mild night near 42. *63 thu, 66 fri, then rain chances creep in sun afternoon into mon, the morning you fly.*"; umbrella "no, 0% all day"; wear "sweater for the 9am gym walk, a shirt by noon"; best_window "12 to 4pm, 59 to 62°".`;
 
 const r1 = (v) => (v == null ? null : Math.round(v));
+const mins = (sec) => (sec == null ? null : Math.round(sec / 60));
+const clipStr = (v, n) => (String(v ?? '').length > n ? `${String(v).slice(0, n - 1)}…` : String(v ?? ''));
+
+/** Oura facts for the model: scores and durations only (never ids or timestamps). */
+function ouraFacts(o) {
+  if (!o || !o.ok) return null;
+  const w = o.week || {};
+  return {
+    readiness: o.readiness ? o.readiness.score : null,
+    sleep_score: o.sleep ? o.sleep.score : null,
+    total_sleep_min: o.sleep ? mins(o.sleep.totalSec) : null,
+    temperature_deviation: o.readiness ? o.readiness.temperatureDeviation : null,
+    week: { readiness_avg: w.readinessAvg ?? null, sleep_score_avg: w.sleepScoreAvg ?? null, total_sleep_min_avg: mins(w.totalSecAvg) },
+  };
+}
+/** Inbox facts: who and why and the subject, never snippets. */
+function inboxFacts(inbox) {
+  if (!inbox || !inbox.ok) return null;
+  return { count: inbox.waiting.length, items: inbox.waiting.slice(0, 3).map((w) => ({ from: w.from, reason: w.reason, subject: clipStr(w.subject, 60) })) };
+}
 
 /** Compact facts for the model. Pure. */
 export function buildFacts(ctx, onDevice) {
@@ -101,7 +124,11 @@ export function buildFacts(ctx, onDevice) {
     events: evs.map((e) => ({
       id: e.id, title: e.title, start: e.allDay ? e.start : e.ls, end: e.allDay ? e.end : e.le, all_day: e.allDay, location: e.location || '',
       away_city: (() => { const di = ctx.travel && ctx.travel.dayInfo(e.date); return di && di.where === 'away' && di.trip ? di.trip.city : null; })(),
+      ...(e.travel ? { travel: { minutes: e.travel.minutes, leave_by: e.travel.leaveBy } } : {}),
     })),
+    inbox: inboxFacts(ctx.inbox),
+    packages: ctx.inbox && ctx.inbox.ok ? ctx.inbox.packages.map((p) => ({ merchant: p.merchant, status: p.status })) : [],
+    oura: ouraFacts(ctx.oura),
     alerts: (m.alerts || []).map((a) => ({ event: a.event, ends: a.ends })),
     on_device: stripFine(onDevice),
   };
@@ -115,7 +142,10 @@ export function fingerprint(ctx) {
   const start = `${today}T${String(block).padStart(2, '0')}:00`;
   const hs = hoursBetween(ctx.model, start, addHours(start, 18)).map((h) => `${Math.round((h.temp ?? 0) / 5) * 5}/${Math.round((h.precipProb ?? 0) / 20) * 20}`);
   const evs = (ctx.events || []).filter((e) => e.date === today || e.date === addDays(today, 1)).map((e) => `${e.id}@${e.start}`).sort();
-  return [today, block, ctx.model.place.name, ctx.units, hs.join(','), evs.join(',')].join('|');
+  const o = ctx.oura && ctx.oura.ok ? `${ctx.oura.readiness ? ctx.oura.readiness.score : ''}/${ctx.oura.sleep ? `${ctx.oura.sleep.score}/${ctx.oura.sleep.totalSec}` : ''}` : '';
+  const waiting = ctx.inbox && ctx.inbox.ok ? ctx.inbox.waiting.map((w) => w.id).join(',') : '';
+  const pk = ctx.inbox && ctx.inbox.ok ? ctx.inbox.packages.map((p) => `${p.merchant}:${p.status}`).join(',') : '';
+  return [today, block, ctx.model.place.name, ctx.units, hs.join(','), evs.join(','), o, waiting, pk].join('|');
 }
 
 export function friendlyAiError(e) {
@@ -183,6 +213,8 @@ export function mergeWritten(onDevice, ai) {
     ...onDevice,
     condition: pick('condition'), headline_lead: pick('headline_lead'), headline_accent: pick('headline_accent'),
     narrative: pick('narrative'), umbrella: pick('umbrella'), wear: pick('wear'), best_window: pick('best_window'),
+    // only when there is Oura data to talk about; otherwise the field stays empty whatever the model said
+    body_note: onDevice.body_note ? pick('body_note') : '',
     day_notes: onDevice.day_notes.map((n) => ({ date: n.date, note: dayMap.get(n.date) || n.note })),
     event_notes: onDevice.event_notes.map((n) => ({ id: n.id, note: evMap.get(n.id) || n.note })),
   };

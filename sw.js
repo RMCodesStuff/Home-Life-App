@@ -1,6 +1,6 @@
 /* Home Life service worker. Same-origin: stale-while-revalidate. Fonts and the
    Anthropic SDK: cache-first. Everything else goes straight to the network. */
-const VERSION = 'home-life-v1';
+const VERSION = 'home-life-v2';
 const CORE = VERSION + '-core';
 const RUNTIME = VERSION + '-runtime';
 
@@ -10,7 +10,7 @@ const PRECACHE = [
   './js/calendar.js', './js/travel.js', './js/insights.js', './js/ai.js',
   './js/icons.js', './js/render.js', './js/settings.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
-  './icons/favicon.svg', './calendar-bridge/Code.gs'
+  './icons/favicon.svg', './calendar-bridge/Code.gs', './calendar-bridge/appsscript.json'
 ];
 
 const CACHE_FIRST_PREFIXES = [

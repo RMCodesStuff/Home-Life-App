@@ -105,3 +105,25 @@ export function hashStr(s) {
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
   return h;
 }
+
+/** Minutes from wall-clock string `a` to `b` ("YYYY-MM-DDTHH:mm"). Both are read as UTC, so DST never skews it. */
+export function diffMinutes(a, b) {
+  const ms = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), hourOf(s), minuteOf(s));
+  return Math.round((ms(b) - ms(a)) / 60000);
+}
+/** "just now", "12m ago", "3h ago", "2d ago" for an ISO timestamp, given the current epoch ms. */
+export function relTime(iso, nowMs) {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const min = Math.floor((nowMs - t) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  if (min < 48 * 60) return min < 24 * 60 ? `${Math.floor(min / 60)}h ago` : '1d ago';
+  return `${Math.floor(min / 1440)}d ago`;
+}
+/** "40 min" or "1h 5m" for a duration in minutes. */
+export function fmtMinutes(min) {
+  const m = Math.round(Math.abs(min));
+  if (m < 60) return `${m} min`;
+  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 60)}h`;
+}

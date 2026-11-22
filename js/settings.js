@@ -2,6 +2,7 @@
 import { icon } from './icons.js';
 import { searchCities, reverseGeocode, currentPosition, placeLabel } from './geo.js';
 import { fetchCalendar, describeCalendarError } from './calendar.js';
+import { fmtMonthDay } from './time.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
 
@@ -63,15 +64,29 @@ export function mountCityPicker(root, { prefix, onPick }) {
 let api = null; // {getSettings, save(settings, kind), getStatus}
 let dialog = null;
 let scriptText = null;
+let manifestText = null;
 let installEvent = null;
 
 const STEPS = `
   <li>Open <a href="https://script.google.com" target="_blank" rel="noopener">script.google.com</a> and create a new project.</li>
   <li>Delete the sample code and paste the script (<b>copy script</b> below already contains your private key).</li>
-  <li>Click <b>Deploy → New deployment</b>, choose type <b>Web app</b>.</li>
-  <li>Set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
-  <li>Approve the Google permission prompt (it only reads your calendars).</li>
+  <li>Open <b>Project Settings</b> (gear icon) and tick <b>Show "appsscript.json" manifest file in editor</b>.</li>
+  <li>Back in the editor, open <b>appsscript.json</b> and paste over it (<b>copy manifest</b> below).</li>
+  <li>Click <b>Deploy → New deployment</b>, choose <b>Web app</b>, set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
+  <li>Approve the Google permission prompt (read-only calendar and gmail).</li>
   <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it below, then tap <b>test connection</b>.</li>`;
+
+const UPDATE_STEPS = `
+  <li>Paste the new script and the manifest (<b>copy script</b> and <b>copy manifest</b> below).</li>
+  <li>Click <b>Deploy → Manage deployments</b>, then the pencil (edit) icon.</li>
+  <li>Set <b>Version: New version</b> and click <b>Deploy</b>. The URL stays the same.</li>`;
+
+const OURA_STEPS = `
+  <li>Create an application at <a href="https://cloud.ouraring.com/oauth/applications" target="_blank" rel="noopener">cloud.ouraring.com/oauth/applications</a> (free). Scope: <b>daily</b>. Set the redirect URI to your web app url:
+    <span class="copy-field"><input type="text" id="oura-redirect" readonly aria-label="your web app url, used as the oura redirect uri" placeholder="paste your web app url under Google first" spellcheck="false">
+    <button class="btn" type="button" id="oura-redirect-copy">copy</button></span></li>
+  <li>In Apps Script, open <b>Project Settings → Script properties</b> and add <b>OURA_CLIENT_ID</b> and <b>OURA_CLIENT_SECRET</b>.</li>
+  <li>Tap <b>connect oura</b> below and authorize.</li>`;
 
 function markup(s) {
   const seg = (name, opts, cur) => `<div class="seg-opts">${opts.map(([v, label]) => `<input type="radio" name="${name}" id="${name}-${v}" value="${v}"${cur === v ? ' checked' : ''}><label for="${name}-${v}">${label}</label>`).join('')}</div>`;
@@ -88,18 +103,35 @@ function markup(s) {
     </section>
 
     <section class="set-sec" id="set-calendar" aria-labelledby="set-cal-h">
-      <h3 id="set-cal-h">Calendar</h3>
+      <h3 id="set-cal-h">Google</h3>
       <p class="status" id="cal-status">not connected</p>
-      <ol class="steps">${STEPS}</ol>
-      <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button></div>
+      <div class="notice" id="cal-update" hidden><b>your google script is out of date.</b> to add inbox &amp; drive times:<ol>${UPDATE_STEPS}</ol></div>
+      <ol class="steps" id="cal-steps">${STEPS}</ol>
+      <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button>
+        <button class="btn btn-accent" type="button" id="cal-copy-manifest">${icon('calendar', { size: 16 })} copy manifest</button></div>
       <p class="result" id="cal-copy-result" role="status"></p>
       <label for="cal-script" class="vh">calendar script</label>
       <textarea id="cal-script" readonly hidden></textarea>
+      <p class="result" id="cal-manifest-result" role="status"></p>
+      <label for="cal-manifest" class="vh">script manifest</label>
+      <textarea id="cal-manifest" readonly hidden></textarea>
       <label for="cal-url">web app url</label>
       <input type="url" id="cal-url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(s.calendar.url || '')}" autocomplete="off" spellcheck="false">
       <div class="set-row"><button class="btn" type="button" id="cal-test">test connection</button></div>
       <p class="result" id="cal-test-result" role="status"></p>
-      <p class="note">anyone who has both the url and the key could read event titles, times and locations for the next two weeks. keep them private.</p>
+      <p class="subhead">show in the app</p>
+      <label class="switch" for="show-inbox"><input type="checkbox" id="show-inbox"${s.show.inbox ? ' checked' : ''}> show waiting on you</label>
+      <label class="switch" for="show-leaveby"><input type="checkbox" id="show-leaveby"${s.show.leaveBy ? ' checked' : ''}> show leave-by times</label>
+      <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times and oura scores. keep them private.</p>
+    </section>
+
+    <section class="set-sec" id="set-oura" aria-labelledby="set-oura-h">
+      <h3 id="set-oura-h">Oura</h3>
+      <p class="status" id="oura-status">not set up</p>
+      <ol class="steps">${OURA_STEPS}</ol>
+      <div class="set-row"><a class="btn btn-accent" id="oura-connect" target="_blank" rel="noopener" href="#" aria-disabled="true">${icon('ring', { size: 16 })} connect oura</a></div>
+      <label class="switch" for="show-oura"><input type="checkbox" id="show-oura"${s.show.oura ? ' checked' : ''}> show last night (oura)</label>
+      <p class="note">needs an oura membership for gen3 and newer rings.</p>
     </section>
 
     <section class="set-sec" id="set-ai" aria-labelledby="set-ai-h">
@@ -149,6 +181,17 @@ function build() {
 
   // calendar
   $('cal-copy').addEventListener('click', copyScript);
+  $('cal-copy-manifest').addEventListener('click', copyManifest);
+  const toggle = (id, key) => $(id).addEventListener('change', (e) => { const st = api.getSettings(); st.show[key] = e.target.checked; api.save(st, 'show'); });
+  toggle('show-inbox', 'inbox'); toggle('show-leaveby', 'leaveBy'); toggle('show-oura', 'oura');
+  $('oura-redirect').addEventListener('focus', (e) => e.target.select());
+  $('oura-redirect-copy').addEventListener('click', async () => {
+    const url = api.getSettings().calendar.url;
+    const b = $('oura-redirect-copy');
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); b.textContent = 'copied'; } catch { $('oura-redirect').select(); b.textContent = 'press ctrl+c'; }
+    setTimeout(() => { b.textContent = 'copy'; }, 2500);
+  });
   $('cal-url').addEventListener('change', (e) => {
     const st = api.getSettings(); st.calendar.url = e.target.value.trim(); api.save(st, 'calendar'); refreshStatus();
   });
@@ -160,7 +203,7 @@ function build() {
     try {
       const st = api.getSettings();
       const res = await fetchCalendar(url, st.calendar.secret);
-      out.textContent = `found ${res.events.length} event${res.events.length === 1 ? '' : 's'}`;
+      out.textContent = `found ${res.events.length} event${res.events.length === 1 ? '' : 's'} · script v${res.version}${res.version < 2 ? ', update it to add inbox & drive times' : ''}`;
       if (st.calendar.url !== url) { st.calendar.url = url; }
       api.save(st, 'calendar');
       refreshStatus();
@@ -193,36 +236,57 @@ function build() {
   refreshInstall();
 }
 
-async function loadScript() {
-  if (scriptText) return scriptText;
-  const res = await fetch('./calendar-bridge/Code.gs', { cache: 'no-cache' });
+async function loadText(path) {
+  const res = await fetch(path, { cache: 'no-cache' });
   if (!res.ok) throw new Error(`http ${res.status}`);
-  scriptText = await res.text();
+  return res.text();
+}
+async function loadScript() {
+  if (!scriptText) scriptText = await loadText('./calendar-bridge/Code.gs');
   return scriptText;
+}
+async function loadManifest() {
+  if (!manifestText) manifestText = await loadText('./calendar-bridge/appsscript.json');
+  return manifestText;
 }
 function personalScript(text) {
   return text.replace('__PASTE_SECRET_HERE__', api.getSettings().calendar.secret);
 }
-async function copyScript() {
-  const out = dialog.querySelector('#cal-copy-result');
-  const ta = dialog.querySelector('#cal-script');
+/** The manifest wants the user's own time zone; the browser knows it. */
+export function personalManifest(text, zone) {
+  return text.replace('__TIME_ZONE__', zone || (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } })() || 'America/New_York');
+}
+/** Copies text from inside the click handler (already-loaded text keeps the user gesture); falls back to a selected textarea. */
+async function copyBlock({ cached, load, transform, outId, taId, ok, fallback }) {
+  const out = dialog.querySelector(`#${outId}`);
+  const ta = dialog.querySelector(`#${taId}`);
   out.classList.remove('err');
   let text;
   try {
-    text = personalScript(scriptText || await loadScript());
+    text = transform(cached() || await load());
   } catch {
-    out.textContent = "couldn't load the script. check your connection and try again."; out.classList.add('err');
+    out.textContent = "couldn't load it. check your connection and try again."; out.classList.add('err');
     return;
   }
   try {
     await navigator.clipboard.writeText(text);
-    out.textContent = 'copied. paste it into the apps script editor.';
+    out.textContent = ok;
     ta.hidden = true;
   } catch {
     ta.value = text; ta.hidden = false; ta.focus(); ta.select();
-    out.textContent = "couldn't copy automatically. the script is selected below; copy it with ctrl+c / ⌘c.";
+    out.textContent = fallback;
   }
 }
+const copyScript = () => copyBlock({
+  cached: () => scriptText, load: loadScript, transform: personalScript, outId: 'cal-copy-result', taId: 'cal-script',
+  ok: 'copied. paste it into the apps script editor.',
+  fallback: "couldn't copy automatically. the script is selected below; copy it with ctrl+c / ⌘c.",
+});
+const copyManifest = () => copyBlock({
+  cached: () => manifestText, load: loadManifest, transform: (t) => personalManifest(t), outId: 'cal-manifest-result', taId: 'cal-manifest',
+  ok: 'copied. paste it over appsscript.json in the editor.',
+  fallback: "couldn't copy automatically. the manifest is selected below; copy it with ctrl+c / ⌘c.",
+});
 
 export function refreshStatus() {
   if (!dialog || !api) return;
@@ -237,7 +301,43 @@ export function refreshStatus() {
     else if (c.error && !c.count) cal.textContent = `not working · ${c.error}`;
     else if (c.fetchedAt) cal.innerHTML = `<span class="ok">connected</span> · ${c.count} event${c.count === 1 ? '' : 's'} · synced ${esc(clockAt(c.fetchedAt, c.offset || 0))}`;
     else cal.textContent = 'connected · syncing…';
+    const b = st.bridge;
+    if (s.calendar.url && b && !(c.error && !c.count)) {
+      const feats = ['calendar', ...(b.version >= 2 && b.features.gmail ? ['gmail'] : []), ...(b.version >= 2 && b.features.leaveBy ? ['drive times'] : [])];
+      cal.innerHTML = `<span class="ok">connected</span> · v${b.version} · ${esc(feats.join(', '))}${c.fetchedAt ? ` · synced ${esc(clockAt(c.fetchedAt, c.offset || 0))}` : ''}`;
+    }
   }
+  const upd = dialog.querySelector('#cal-update');
+  if (upd) upd.hidden = !(s.calendar.url && st.bridge && st.bridge.version < 2);
+  refreshOura(s, st);
+}
+
+function refreshOura(s, st) {
+  const status = dialog.querySelector('#oura-status');
+  if (!status) return;
+  const url = s.calendar.url;
+  const redirect = dialog.querySelector('#oura-redirect');
+  if (document.activeElement !== redirect) redirect.value = url || '';
+  const link = dialog.querySelector('#oura-connect');
+  if (url) {
+    link.href = `${url}${url.includes('?') ? '&' : '?'}action=oura-connect&key=${encodeURIComponent(s.calendar.secret)}`;
+    link.removeAttribute('aria-disabled');
+  } else { link.href = '#'; link.setAttribute('aria-disabled', 'true'); }
+  const o = st.oura;
+  let text = 'not set up';
+  let good = false;
+  if (!url || !o) text = url ? 'checking…' : 'not set up';
+  else if (o.version < 2) text = 'needs the updated google script first';
+  else if (!o.data) text = 'not set up';
+  else if (o.data.ok) {
+    const score = o.data.readiness && o.data.readiness.score;
+    const when = !o.data.day || o.data.day === st.today ? 'today' : `on ${fmtMonthDay(o.data.day)}`;
+    text = score != null ? `connected · readiness ${Math.round(score)} ${when}` : 'connected';
+    good = true;
+  } else if (o.data.error === 'not_configured') text = 'not set up';
+  else if (o.data.error === 'not_connected') text = 'not connected yet · tap connect oura';
+  else text = o.data.message || o.data.error;
+  status.innerHTML = good ? `<span class="ok">connected</span>${esc(text.slice('connected'.length))}` : esc(text);
 }
 
 function refreshInstall() {
@@ -254,6 +354,7 @@ export function openSettings(section) {
   refreshStatus();
   refreshInstall();
   loadScript().catch(() => {});
+  loadManifest().catch(() => {});
   if (!dialog.open) dialog.showModal();
   const target = section && dialog.querySelector(`#set-${section}`);
   if (target) {

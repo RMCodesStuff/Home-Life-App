@@ -1,7 +1,7 @@
 // DOM rendering for every card. Takes a prepared `view` (see app.js buildView) and writes HTML.
 import { icon, weatherIcon } from './icons.js';
 import {
-  datePart, hourKey, hourOf, addDays, addHours, dowShort, fmtDateLong, fmtMonthDay, fmtHourShort, fmtClock, toLocal, minutesOfDay,
+  datePart, hourKey, hourOf, addDays, addHours, dowShort, fmtDateLong, fmtMonthDay, fmtHourShort, fmtClock, toLocal, minutesOfDay, fmtDuration, relTime,
 } from './time.js';
 import { dayByDate, hoursBetween, nightLow } from './weather.js';
 import { modelForDate } from './insights.js';
@@ -34,6 +34,35 @@ export function tempColor(f) {
   return rgb(STOPS[STOPS.length - 1][1]);
 }
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+
+// ---------- last night (oura) ----------
+const signed = (n, unit = '') => `${n > 0 ? '+' : '\u2212'}${Math.abs(Math.round(n))}${unit}`;
+/** Three stats and a note, only when the bridge returned Oura data (view.ctx.oura is null otherwise). */
+export function lastNightHTML(view) {
+  const o = view.ctx.oura;
+  if (!o) return '';
+  const wk = o.week || {};
+  const slept = o.sleep && o.sleep.totalSec;
+  const sleepScore = o.sleep && o.sleep.score;
+  const ready = o.readiness && o.readiness.score;
+  const delta = (v, avg, unit = '', scale = 1) => {
+    if (v == null || avg == null) return '';
+    const d = Math.round((v - avg) / scale);
+    return d ? `<span class="ln-d">${signed(d, unit)}</span>` : '';
+  };
+  const stat = (label, value, d) => `<div class="ln-stat"><span class="ln-l">${label}</span><span class="ln-v">${value}</span>${d || ''}</div>`;
+  if (slept == null && sleepScore == null && ready == null) return '';
+  const note = view.written.body_note;
+  return `<div class="lastnight" aria-label="last night, from oura">
+    <p class="ln-head">${icon('moon-sleep', { size: 15 })}<span>last night</span></p>
+    <div class="ln-stats">
+      ${stat('slept', slept != null ? esc(fmtDuration(slept)) : '—', delta(slept, wk.totalSecAvg, 'm', 60))}
+      ${stat('sleep', sleepScore != null ? Math.round(sleepScore) : '—', delta(sleepScore, wk.sleepScoreAvg))}
+      ${stat('readiness', ready != null ? Math.round(ready) : '—', delta(ready, wk.readinessAvg))}
+    </div>
+    ${note ? `<p class="ln-note${view.fade ? ' fade-in' : ''}">${esc(note)}</p>` : ''}
+  </div>`;
+}
 
 // ---------- hero ----------
 export function heroHTML(view) {
@@ -103,13 +132,16 @@ export function heroHTML(view) {
       <div><p class="cond${fade}">${esc(w.condition)}</p>
       <p class="cond-sub">feels ${deg(m.current.feels)} · high ${deg(d.high)} · low ${deg(d.low)}</p></div>
     </div>
+    ${lastNightHTML(view)}
     ${alerts}
     <h1 class="headline${fade}">${esc(w.headline_lead)} <em>${esc(w.headline_accent)}</em></h1>
     <p class="narrative${fade}">${prose(w.narrative)}</p>
     <ul class="chips${fade}">
       <li class="chip">${icon('umbrella', { size: 16 })}<b>umbrella</b><span>${esc(w.umbrella)}</span></li>
       <li class="chip">${icon('shirt', { size: 16 })}<b>wear</b><span>${esc(w.wear)}</span></li>
+      ${w.leave_chip ? `<li class="chip">${icon('car', { size: 16 })}<b>leave</b><span>${esc(w.leave_chip.replace(/^leave\s+/, ''))}</span></li>` : ''}
       <li class="chip chip-accent">${icon('sunwindow', { size: 16 })}<b>best window</b><span>${esc(w.best_window)}</span></li>
+      ${w.inbox_chip ? `<li class="chip">${icon('inbox', { size: 16 })}<b>inbox</b><span>${esc(w.inbox_chip)}</span></li>` : ''}
     </ul>
     <div class="hero-foot">
       <span>${footParts.join(' · ')}</span>
@@ -172,6 +204,7 @@ export function hourlyHTML(view) {
   const rainRow = hours.map((h) => `<span class="${(h.precipProb ?? 0) >= 10 ? 'wet' : ''}">${h.precipProb ?? 0}%</span>`).join('');
   const labelRow = hours.map((h, i) => `<span class="${i === 0 ? 'now' : ''}">${fmtHourShort(hourOf(h.time))}</span>`).join('');
   const sunRow = hours.map((h) => `<span>${esc(sunMarks.get(h.time) || '')}</span>`).join('');
+  const waiting = waitingHTML(view);
   const sr = `${hours.map((h) => `${fmtHourShort(hourOf(h.time))} ${Math.round(h.temp)} degrees, ${h.precipProb ?? 0}% rain`).join('; ')}`;
   return `
     <div class="card-head"><h2>Hour by hour</h2>
@@ -189,25 +222,28 @@ export function hourlyHTML(view) {
       </div>
     </div>
     <p class="foot-note">blue figures are the chance of rain each hour. scroll for more.</p>
-    <div class="yourday">${yourDayHTML(view)}</div>`;
+    <div class="yourday">${yourDayHTML(view)}</div>
+    ${waiting ? `<div class="waiting">${waiting}</div>` : ''}`;
 }
 
 // ---------- your day ----------
 function firstSegment(loc) {
   return String(loc || '').split(',')[0].trim();
 }
-function eventRow(view, ev, isNext, notes) {
+function eventRow(view, ev, isNext, notes, extra) {
   const now = view.ctx.now;
   const ongoing = ev.ls <= now && ev.le > now;
   const m = modelForDate(view.ctx, ev.date);
   const h = m.hours.find((x) => x.time === hourKey(ev.ls));
   const note = notes.get(ev.id);
+  const leave = extra.leaves.get(ev.id);
   const loc = /^https?:|zoom\.us|meet\.google|teams\.microsoft|webex/i.test(ev.location) ? '' : firstSegment(ev.location);
   return `<li class="ev${isNext ? ' next' : ''}${ongoing ? ' now' : ''}">
     <div class="ev-time"><span class="t">${ongoing ? 'now' : esc(fmtClock(ev.ls))}</span><span class="d">${esc(dowShort(ev.date))}</span></div>
     <span class="ev-dot" aria-hidden="true"></span>
     <div class="ev-body"><p class="ev-title">${esc(ev.title)}</p>${loc ? `<p class="ev-loc">${esc(loc)}</p>` : ''}
-    ${note ? `<p class="ev-wx${view.fade ? ' fade-in' : ''}">${h ? weatherIcon(h.code, h.isDay, { size: 16 }) : ''}<span>${esc(note)}</span></p>` : ''}</div>
+    ${note ? `<p class="ev-wx${view.fade ? ' fade-in' : ''}">${h ? weatherIcon(h.code, h.isDay, { size: 16 }) : ''}<span>${esc(note)}</span></p>` : ''}
+    ${leave ? `<p class="ev-leave${extra.nextLeaveId === ev.id ? ' soon' : ''}">${icon('car', { size: 16 })}<span>${esc(leave)}</span></p>` : ''}</div>
   </li>`;
 }
 
@@ -225,18 +261,48 @@ export function yourDayHTML(view) {
   }
   const v = yourDay(view.ctx.events, view.ctx.now);
   const notes = new Map((view.written.event_notes || []).map((x) => [x.id, x.note]));
+  const leaves = new Map((view.written.leave_notes || []).filter((x) => x.note).map((x) => [x.id, x.note]));
+  // the accent goes to the next departure that is still ahead
+  const nextLeave = [...v.upcoming, ...v.tomorrow].find((e) => e.travel && e.travel.leaveBy && e.travel.leaveBy >= view.ctx.now);
+  const extra = { leaves, nextLeaveId: nextLeave ? nextLeave.id : null };
+  const stale = view.bridge && view.bridge.version < 2
+    ? '<p class="cal-note"><button class="text-btn muted" type="button" data-action="open-settings-calendar">update your google script to add inbox &amp; drive times</button></p>' : '';
   const chips = v.chips.length ? `<div class="allday">${v.chips.map((c) => `<span class="ad-chip">${icon('calendar', { size: 14 })}<span>${esc(c.title)}</span></span>`).join('')}</div>` : '';
   const earlier = v.earlier || (!v.upcoming.length && v.tomorrow.length)
     ? `<p class="earlier">${[v.earlier ? `${v.earlier} earlier today` : '', !v.upcoming.length && v.tomorrow.length ? 'nothing else today' : ''].filter(Boolean).join(' · ')}</p>` : '';
-  let list = v.upcoming.map((e) => eventRow(view, e, v.next && e.id === v.next.id, notes)).join('');
+  let list = v.upcoming.map((e) => eventRow(view, e, v.next && e.id === v.next.id, notes, extra)).join('');
   if (!v.upcoming.length && !v.tomorrow.length) {
     return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}
-      <p class="day-empty">${v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}`;
+      <p class="day-empty">${v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}${stale}`;
   }
   if (v.tomorrow.length) {
-    list += `<li class="ev-label">tomorrow</li>${v.tomorrow.slice(0, 4).map((e, i) => eventRow(view, e, !v.upcoming.length && i === 0, notes)).join('')}`;
+    list += `<li class="ev-label">tomorrow</li>${v.tomorrow.slice(0, 4).map((e, i) => eventRow(view, e, !v.upcoming.length && i === 0, notes, extra)).join('')}`;
   }
-  return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}<ol class="timeline">${list}</ol>${errNote}`;
+  return `${head('<span class="sub-right">calendar</span>')}${chips}${earlier}<ol class="timeline">${list}</ol>${errNote}${stale}`;
+}
+
+// ---------- waiting on you (gmail) ----------
+export function waitingHTML(view) {
+  const b = view.bridge;
+  if (!view.calendarConnected || !b || b.version < 2 || !view.settings.show.inbox || !b.inbox) return '';
+  const inbox = b.inbox;
+  const head = '<div class="sec-head"><h2>Waiting on you</h2><span class="sub-right">gmail</span></div>';
+  if (!inbox.ok) {
+    if (inbox.error === 'disabled') return '';
+    return `${head}<p class="cal-note">couldn't read gmail: ${esc(inbox.error)}</p>`;
+  }
+  const nowMs = Date.now();
+  const pkgNotes = new Map(((view.written && view.written.package_notes) || []).map((x) => [x.id, x.note]));
+  const wrap = (url, cls, inner) => (url ? `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noopener">${inner}</a>` : `<div class="${cls}">${inner}</div>`);
+  const rows = inbox.waiting.map((w) => `<li>${wrap(w.url, 'wait-row', `
+      <span class="wr-main"><span class="wr-top"><b class="wr-from">${esc(w.from || 'someone')}</b><span class="wr-reason">${esc(w.reason)}</span></span>
+      <span class="wr-subj">${esc(w.subject || '(no subject)')}</span></span>
+      <span class="wr-time">${esc(relTime(w.date, nowMs))}</span>`)}</li>`).join('');
+  const pkgs = inbox.packages.map((p) => `<li>${wrap(p.url, 'wait-row pkg', `
+      <span class="wr-icon">${icon('box', { size: 18 })}</span>
+      <span class="wr-main"><span class="wr-subj pk">${esc(pkgNotes.get(p.id) || `${p.merchant} package ${p.status}`)}</span></span>`)}</li>`).join('');
+  const empty = inbox.waiting.length ? '' : '<p class="day-empty">nothing waiting on you. inbox zero, or close to it.</p>';
+  return `${head}${empty}${rows || pkgs ? `<ul class="wait-list">${rows}${pkgs}</ul>` : ''}`;
 }
 
 // ---------- the week ----------

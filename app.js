@@ -5,7 +5,7 @@ import { fetchRawForecast, fetchAirQuality, fetchAlerts, normalize } from './js/
 import { makeGeocoder } from './js/geo.js';
 import { fetchCalendar, localizeEvents, describeCalendarError } from './js/calendar.js';
 import { detectTrips, travelLine, tripsToForecast, placeKey } from './js/travel.js';
-import { writeAll, modelForDate } from './js/insights.js';
+import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
 import { renderAll } from './js/render.js';
 import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker } from './js/settings.js';
@@ -66,6 +66,14 @@ function cachedModel(place, lat, lon, units, { withExtras = false } = {}) {
   } catch { return null; }
 }
 
+/** Where you are today (trip city when away, else home), for the bridge's leave-by drive times. */
+function primaryPlace() {
+  const h = state.settings.home;
+  const info = state.travel && state.home ? state.travel.dayInfo(homeToday()) : null;
+  const t = info && info.where === 'away' ? info.trip : null;
+  return t && Number.isFinite(t.lat) && Number.isFinite(t.lon) ? { lat: t.lat, lon: t.lon } : { lat: h.lat, lon: h.lon };
+}
+
 function buildCtx() {
   const home = state.home;
   if (!home) return null;
@@ -73,9 +81,17 @@ function buildCtx() {
   const info = state.travel ? state.travel.dayInfo(today) : null;
   let model = home;
   if (info && info.where === 'away' && info.trip && state.tripModels[info.trip.id]) model = state.tripModels[info.trip.id];
+  const show = state.settings.show;
+  const bridge = state.cal && state.cal.bridge;
   const base = { now: localNow(model.offset), units: state.settings.units, model, homeModel: home, tripModels: state.tripModels, travel: state.travel, events: [] };
-  const events = state.cal ? localizeEvents(state.cal.events, (date) => modelForDate(base, date).offset) : [];
-  return { ...base, events };
+  const raw = state.cal ? (show.leaveBy ? state.cal.events : state.cal.events.map(({ travel, ...rest }) => rest)) : [];
+  const events = localizeEvents(raw, (date) => modelForDate(base, date).offset);
+  return {
+    ...base,
+    events,
+    inbox: show.inbox && bridge && bridge.inbox && bridge.inbox.ok ? bridge.inbox : null,
+    oura: show.oura && bridge && bridge.oura && bridge.oura.ok ? bridge.oura : null,
+  };
 }
 
 function buildView({ fade = false } = {}) {
@@ -89,6 +105,7 @@ function buildView({ fade = false } = {}) {
   const ai = state.ai;
   if (s.ai.enabled && s.ai.key && ai && ai.result && Date.now() - ai.at < AI_MAX_AGE && ai.fp.slice(0, 10) === datePart(ctx.now)) {
     written = mergeWritten(onDevice, ai.result);
+    written.best_window = withEasyPace(written.best_window, ctx.oura);
     writtenBy = 'claude';
   }
   const today = datePart(ctx.now);
@@ -108,6 +125,7 @@ function buildView({ fade = false } = {}) {
     calendarConnected: !!s.calendar.url,
     hasCalendarData: !!state.cal,
     calFetchedAt: state.cal && state.cal.fetchedAt,
+    bridge: state.cal && state.cal.bridge ? state.cal.bridge : null, // {version, features, inbox, oura}; null = not fetched yet
     calErrorText: state.calError ? describeCalendarError(state.calError) : '',
     travelLine: s.calendar.url && state.travel ? travelLine(state.travel, today) : (s.calendar.url && state.cal ? 'checking your calendar for trips…' : ''),
     alertOpen: state.alertOpen,
@@ -174,7 +192,7 @@ function restoreFromCache() {
   state.home = cachedModel(h, h.lat, h.lon, s.units, { withExtras: true });
   state.wxFetchedAt = state.home ? state.home.fetchedAt : 0;
   const cal = s.calendar.url ? getJSON(KEYS.cal) : null;
-  state.cal = cal && cal.data && cal.url === s.calendar.url ? { events: cal.data.events, fetchedAt: cal.at } : null;
+  state.cal = cal && cal.data && cal.url === s.calendar.url ? { events: cal.data.events, fetchedAt: cal.at, bridge: cal.data.bridge || null } : null;
   const ai = getJSON(KEYS.ai);
   state.ai = ai && ai.result ? ai : null;
 }
@@ -194,7 +212,7 @@ async function refresh({ manual = false } = {}) {
       fetchRawForecast(h.lat, h.lon, units),
       fetchAirQuality(h.lat, h.lon),
       fetchAlerts(h.lat, h.lon, h.countryCode),
-      s.calendar.url ? fetchCalendar(s.calendar.url, s.calendar.secret) : Promise.resolve(null),
+      s.calendar.url ? fetchCalendar(s.calendar.url, s.calendar.secret, 14, { from: primaryPlace() }) : Promise.resolve(null),
     ]);
     if (units !== state.settings.units || h !== state.settings.home) return; // settings changed mid-flight
     let aqData;
@@ -214,7 +232,12 @@ async function refresh({ manual = false } = {}) {
       if (state.home) state.home = { ...state.home, aqi: state.home.aqi, alerts };
     }
     if (cal.status === 'fulfilled') {
-      if (cal.value) { state.cal = { events: cal.value.events, fetchedAt: cal.value.fetchedAt }; setJSON(KEYS.cal, { at: cal.value.fetchedAt, url: s.calendar.url, data: { events: cal.value.events } }); }
+      if (cal.value) {
+        const { version, features, inbox, oura } = cal.value;
+        const bridge = { version, features, inbox, oura };
+        state.cal = { events: cal.value.events, fetchedAt: cal.value.fetchedAt, bridge };
+        setJSON(KEYS.cal, { at: cal.value.fetchedAt, url: s.calendar.url, data: { events: cal.value.events, bridge } });
+      }
       else state.cal = null;
       state.calError = null;
     } else state.calError = cal.reason || { kind: 'network' };
@@ -263,11 +286,11 @@ async function maybeAI() {
 
 // ---------- settings ----------
 function onSettingsSaved(st, kind) {
-  state.settings = { ...st, calendar: { ...st.calendar }, ai: { ...st.ai } };
+  state.settings = { ...st, calendar: { ...st.calendar }, ai: { ...st.ai }, show: { ...st.show } };
   saveSettings(state.settings);
   switch (kind) {
     case 'theme': applyTheme(state.settings.theme); break;
-    case 'label': render(); break;
+    case 'label': case 'show': render(); refreshStatus(); break;
     case 'home':
     case 'units':
       state.home = null; state.travel = null; state.tripModels = {}; state.ai = null; state.wxError = null; state.wxStale = false;
@@ -291,7 +314,13 @@ function onSettingsSaved(st, kind) {
 
 function getStatus() {
   const off = state.home ? state.home.offset : 0;
-  return { calendar: { count: state.cal ? state.cal.events.length : 0, fetchedAt: state.cal && state.cal.fetchedAt, offset: off, error: state.calError ? describeCalendarError(state.calError) : '' } };
+  const b = state.cal && state.cal.bridge;
+  return {
+    calendar: { count: state.cal ? state.cal.events.length : 0, fetchedAt: state.cal && state.cal.fetchedAt, offset: off, error: state.calError ? describeCalendarError(state.calError) : '' },
+    bridge: b ? { version: b.version, features: b.features } : null,
+    oura: b ? { version: b.version, data: b.oura } : null,
+    today: homeToday(),
+  };
 }
 
 // ---------- service worker ----------
@@ -348,7 +377,7 @@ function wire() {
 function boot() {
   applyTheme(state.settings.theme);
   wire();
-  initSettings(els.dialog, { getSettings: () => ({ ...state.settings, calendar: { ...state.settings.calendar }, ai: { ...state.settings.ai } }), save: onSettingsSaved, getStatus });
+  initSettings(els.dialog, { getSettings: () => ({ ...state.settings, calendar: { ...state.settings.calendar }, ai: { ...state.settings.ai }, show: { ...state.settings.show } }), save: onSettingsSaved, getStatus });
   if (!state.settings.home) { render(); registerSW(); return; }
   restoreFromCache();
   render();

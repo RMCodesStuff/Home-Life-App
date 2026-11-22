@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   units: 'imperial',
   theme: 'auto',
   calendar: { url: '', secret: '' },
+  show: { inbox: true, leaveBy: true, oura: true }, // app-side switches for the Google bridge's extras
   ai: { enabled: false, key: '', model: 'claude-opus-5-5' },
 };
 
@@ -45,6 +46,7 @@ export function loadSettings() {
     ...DEFAULT_SETTINGS,
     ...saved,
     calendar: { ...DEFAULT_SETTINGS.calendar, ...(saved.calendar || {}) },
+    show: { ...DEFAULT_SETTINGS.show, ...(saved.show || {}) },
     ai: { ...DEFAULT_SETTINGS.ai, ...(saved.ai || {}) },
   };
   if (!s.calendar.secret) {
