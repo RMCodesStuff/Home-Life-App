@@ -1,8 +1,8 @@
 /**
- * Home Life bridge (v2)
+ * Home Life bridge (v3)
  *
  * What it does: a small Google Apps Script web app, running as you inside
- * Google, that gives the Home Life app four read-only things as JSON:
+ * Google, that gives the Home Life app read-only things as JSON:
  *   1. Your upcoming calendar events (titles, times, locations; never
  *      descriptions or guest lists; declined events are skipped).
  *   2. "Waiting on you": up to 5 inbox threads that need a reply or an action
@@ -10,14 +10,33 @@
  *   3. Leave-by times: drive minutes and a "leave by" time for today's events
  *      that have an address (Google Maps service).
  *   4. "Last night": sleep and readiness from your Oura ring (optional).
+ *   5. The rundown: today's briefing file written to Google Drive by the daily
+ *      Claude run (folder "Home Life", file home-life-briefing-YYYY-MM-DD.json).
+ *   6. Park days: hours, early entry, show times and today's wait times from
+ *      ThemeParks.wiki, for theme parks named in a calendar event in the next
+ *      3 days (free, no key).
+ *   7. Trip drive: drive time to a trip destination, when the app asks for it.
+ *   8. Birthdays: contacts with a birthday in the next 21 days.
  * Each feature is optional and fails on its own, so one problem never takes
- * down the others.
+ * down the others. Switch any of them off with the ENABLE_* constants below.
+ *
+ * Permissions (appsscript.json), all read-only:
+ *   calendar.readonly        your events.
+ *   gmail.readonly           the waiting list and package statuses.
+ *   drive.readonly           reads the briefing file the Claude run creates.
+ *                            The Drive connector cannot edit file contents, so
+ *                            the narrower drive.file scope would not see those
+ *                            files. This script only lists the "Home Life"
+ *                            folder and reads home-life-briefing-*.json.
+ *   contacts.readonly        birthdays (People API).
+ *   script.external_request  Gmail API, Oura, ThemeParks.wiki, People API.
  *
  * The SECRET below is a private key. Requests without the right key get
  * {"ok":false,"error":"unauthorized"}, which keeps strangers out. Anyone who has
  * both the web app URL and the key could read what this script returns (event
- * titles, email senders and subjects, drive times, Oura scores), so keep both
- * private. Nothing is stored outside your Google account and your browser.
+ * titles, email senders and subjects, drive times, Oura scores, the rundown's
+ * money and fantasy lines, birthdays, park data), so keep both private.
+ * Nothing is stored outside your Google account and your browser.
  *
  * Setup:
  *  1. Open https://script.google.com and create a new project.
@@ -26,16 +45,27 @@
  *  3. Project Settings (gear icon) -> tick "Show appsscript.json manifest
  *     file in editor". Open appsscript.json and replace its contents with the
  *     manifest (in the app: "copy manifest"). It limits Google's permission
- *     prompt to read-only calendar and gmail access.
+ *     prompt to the read-only access listed above.
  *  4. Deploy -> New deployment -> type "Web app" -> Execute as: Me,
  *     Who has access: Anyone -> Deploy.
- *  5. Approve the permission prompt (read-only calendar and gmail).
+ *  5. Approve the permission prompt (read-only calendar, gmail, drive, contacts).
  *  6. Copy the Web app URL (ends in /exec), paste it into settings -> Google
  *     in the app, then tap "test connection".
  *
- * Updating an existing deployment (the URL stays the same): paste the new
- * script and manifest, then Deploy -> Manage deployments -> edit (pencil) ->
- * Version: New version -> Deploy.
+ * Updating an existing deployment from v1 or v2 (the URL stays the same): paste
+ * the new script and manifest, then in the editor pick any function (doGet) and
+ * press Run once so Google shows the new Drive and Contacts permission prompt
+ * and you can approve it, then Deploy -> Manage deployments -> edit (pencil) ->
+ * Version: New version -> Deploy. Until approved, briefing and birthdays report
+ * an error and everything else keeps working.
+ *
+ * Also enable the People API for the script's Google Cloud project if birthdays
+ * reports "people http 403": Project Settings -> Google Cloud Platform project
+ * -> enable "People API" (default projects usually allow it already).
+ *
+ * The rundown (optional): create a folder named exactly "Home Life" in My Drive.
+ * The daily Claude run saves home-life-briefing-YYYY-MM-DD.json there. The
+ * bridge returns the newest file dated within the last 2 days.
  *
  * Oura (optional, one-time):
  *  1. Create an application at https://cloud.ouraring.com/oauth/applications
@@ -56,11 +86,19 @@ const MAX_LOCATION = 200;
 
 const ENABLE_GMAIL = true;
 const ENABLE_LEAVE_BY = true;
+const ENABLE_BRIEFING = true;
+const ENABLE_PARKS = true;
+const ENABLE_TRIP_DRIVE = true;
+const ENABLE_BIRTHDAYS = true;
 
-const BRIDGE_VERSION = 2;
+const BRIDGE_VERSION = 3;
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const OURA_API = 'https://api.ouraring.com';
 const OURA_AUTH = 'https://cloud.ouraring.com/oauth/authorize';
+const PARKS_API = 'https://api.themeparks.wiki/v1';
+const PEOPLE_API = 'https://people.googleapis.com/v1/people/me/connections';
+const BRIEFING_FOLDER = 'Home Life';
+const BRIEFING_FILE_RE = /^home-life-briefing-(\d{4}-\d{2}-\d{2})\.json$/;
 
 const MAX_WAITING = 5;
 const MAX_WAITING_FETCH = 15;
@@ -72,6 +110,23 @@ const LEAVE_BUFFER_MIN = 5;
 const INBOX_CACHE_SECONDS = 600;
 const OURA_CACHE_SECONDS = 1200;
 const ROUTE_CACHE_SECONDS = 2700;
+const BRIEFING_CACHE_SECONDS = 600;
+const BRIEFING_MAX_AGE_DAYS = 2;
+const BRIEFING_MAX_BYTES = 200000;
+const DEST_CACHE_SECONDS = 86400;
+const SCHEDULE_CACHE_SECONDS = 6 * 3600;
+const LIVE_CACHE_SECONDS = 300;
+const PARK_WINDOW_DAYS = 3;
+const MAX_PARK_DAYS = 6;
+const MAX_SHOWS = 6;
+const MAX_WAITS = 6;
+const TRIP_CACHE_SECONDS = 3 * 3600;
+const TRIP_MIN_MILES = 25;
+const TRIP_DEPART_HOUR = 8;
+const BIRTHDAY_DAYS = 21;
+const BIRTHDAY_PAGES = 3;
+const BIRTHDAY_CACHE_SECONDS = 12 * 3600;
+const CACHE_CHUNK = 30000;
 
 const WAITING_QUERY = 'in:inbox newer_than:10d -category:promotions -category:social -category:forums -from:me';
 const PACKAGE_QUERY = 'newer_than:7d (subject:("out for delivery" OR "arriving today" OR "arriving tomorrow" OR delivered OR "has shipped" OR "on its way" OR "on the way"))';
@@ -123,18 +178,34 @@ function doGet(e) {
   if (ENABLE_LEAVE_BY && from) {
     try { addLeaveBy_(events, from, nowMs, tz); } catch (err) { /* leave-by is best effort */ }
   }
+  const parks = isolate_(function () { return parksFeature_(events, nowMs, tz); });
   events.forEach(function (ev) { delete ev.sortKey; delete ev.startMs; });
 
-  return respond_({
+  const out = {
     ok: true,
     version: BRIDGE_VERSION,
     timeZone: tz,
     generated: now.toISOString(),
-    features: { gmail: ENABLE_GMAIL, leaveBy: ENABLE_LEAVE_BY, oura: ouraConfigured_() },
+    features: {
+      gmail: ENABLE_GMAIL, leaveBy: ENABLE_LEAVE_BY, oura: ouraConfigured_(),
+      briefing: ENABLE_BRIEFING, parks: ENABLE_PARKS, tripDrive: ENABLE_TRIP_DRIVE, birthdays: ENABLE_BIRTHDAYS
+    },
     events: events,
     inbox: inboxFeature_(nowMs, tz),
-    oura: ouraFeature_(nowMs, tz)
-  });
+    oura: ouraFeature_(nowMs, tz),
+    briefing: isolate_(function () { return briefingFeature_(nowMs, tz); }),
+    parks: parks,
+    birthdays: isolate_(function () { return birthdaysFeature_(nowMs, tz); })
+  };
+  if (params.trip) {
+    out.tripDrive = isolate_(function () { return tripDriveFeature_(params.trip, params.tripDate, from, nowMs, tz); });
+  }
+  return respond_(out);
+}
+
+/** Runs one feature; a throw becomes {ok:false} so it can never break the response. */
+function isolate_(fn) {
+  try { return fn(); } catch (err) { return { ok: false, error: shortError_(err) }; }
 }
 
 function respond_(obj) {
@@ -291,6 +362,31 @@ function cacheRead_(cache, key) {
 function cacheWrite_(cache, key, value, seconds) {
   if (!cache) return;
   try { cache.put(key, JSON.stringify(value === undefined ? null : value), seconds); } catch (err) { /* too big or unavailable */ }
+}
+
+/** Like cacheWrite_ but splits values over the 100 KB per-key limit into chunks. */
+function cacheWriteBig_(cache, key, value, seconds) {
+  if (!cache) return;
+  const raw = JSON.stringify(value === undefined ? null : value);
+  if (raw.length <= CACHE_CHUNK) { cacheWrite_(cache, key, value, seconds); return; }
+  const n = Math.ceil(raw.length / CACHE_CHUNK);
+  try {
+    for (let i = 0; i < n; i++) cache.put(key + ':' + i, raw.slice(i * CACHE_CHUNK, (i + 1) * CACHE_CHUNK), seconds);
+    cache.put(key, JSON.stringify({ chunked: n }), seconds);
+  } catch (err) { /* unavailable */ }
+}
+function cacheReadBig_(cache, key) {
+  const head = cacheRead_(cache, key);
+  if (!head || typeof head !== 'object' || !head.chunked) return head;
+  try {
+    let raw = '';
+    for (let i = 0; i < head.chunked; i++) {
+      const part = cache.get(key + ':' + i);
+      if (part === null || part === undefined) return undefined;
+      raw += part;
+    }
+    return JSON.parse(raw);
+  } catch (err) { return undefined; }
 }
 
 /** Short, token-free error text for responses. */
@@ -750,4 +846,397 @@ function ouraFeature_(nowMs, tz) {
     if (err && err.code) return { ok: false, error: err.code, message: err.code === 'not_connected' ? undefined : shortError_(err) };
     return { ok: false, error: shortError_(err) };
   }
+}
+
+// ---------------------------------------------------------------- briefing (Drive)
+
+/** Newest briefing file name within the age window: {date, name} or null. Pure. */
+function pickBriefingName_(names, today) {
+  const oldest = dayShift_(today, -BRIEFING_MAX_AGE_DAYS);
+  let best = null;
+  (names || []).forEach(function (name) {
+    const m = BRIEFING_FILE_RE.exec(String(name));
+    if (!m) return;
+    const date = m[1];
+    if (date < oldest || date > today) return;
+    if (!best || date > best.date) best = { date: date, name: String(name) };
+  });
+  return best;
+}
+
+/** Reads the newest briefing file's text from the "Home Life" folder(s). Returns {name, date, text} or null. */
+function readBriefingFile_(today) {
+  const files = {};
+  const folders = DriveApp.getFoldersByName(BRIEFING_FOLDER);
+  while (folders.hasNext()) {
+    const it = folders.next().getFiles();
+    while (it.hasNext()) {
+      const f = it.next();
+      const name = f.getName();
+      if (BRIEFING_FILE_RE.test(name)) (files[name] = files[name] || []).push(f);
+    }
+  }
+  const pick = pickBriefingName_(Object.keys(files), today);
+  if (!pick) return null;
+  const file = files[pick.name][0];
+  return { name: pick.name, date: pick.date, text: file.getBlob().getDataAsString('UTF-8') };
+}
+
+function briefingFeature_(nowMs, tz) {
+  if (!ENABLE_BRIEFING) return { ok: false, error: 'disabled' };
+  const today = todayIn_(nowMs, tz);
+  const cache = cacheOf_();
+  let hit = cacheRead_(cache, 'hl-briefing-v3');
+  if (!hit || !hit.file || !hit.forDate || hit.forDate < dayShift_(today, -BRIEFING_MAX_AGE_DAYS)) hit = undefined;
+  if (!hit) {
+    let found;
+    try { found = readBriefingFile_(today); } catch (err) { return { ok: false, error: shortError_(err) }; }
+    if (!found) return { ok: false, error: 'not_found' };
+    if (found.text.length > BRIEFING_MAX_BYTES) return { ok: false, error: 'too_big' };
+    let data;
+    try { data = JSON.parse(found.text); } catch (err) { return { ok: false, error: 'bad_json' }; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: 'bad_json' };
+    hit = { file: found.name, forDate: found.date, data: data };
+    cacheWriteBig_(cache, 'hl-briefing-v3', hit, BRIEFING_CACHE_SECONDS);
+  }
+  return { ok: true, file: hit.file, forDate: hit.forDate, stale: hit.forDate !== today, data: hit.data };
+}
+
+// ---------------------------------------------------------------- parks (ThemeParks.wiki)
+
+const PARK_STOP_WORDS = ['park', 'theme', 'the'];
+
+/** Lowercase, strip punctuation, drop the filler words. Returns a token array. */
+function parkTokens_(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(function (w) {
+    return w && PARK_STOP_WORDS.indexOf(w) < 0;
+  });
+}
+
+/**
+ * Parks named by an event (title + location). A park matches when every token of
+ * its name appears among the text's tokens. When one matched park's tokens are a
+ * strict subset of another's, only the more specific one is kept.
+ */
+function matchParks_(text, parks) {
+  const have = {};
+  parkTokens_(text).forEach(function (t) { have[t] = true; });
+  const hits = [];
+  (parks || []).forEach(function (p) {
+    const toks = parkTokens_(p && p.name);
+    if (!toks.length || !p.id) return;
+    if (toks.every(function (t) { return have[t]; })) hits.push({ park: p, toks: toks });
+  });
+  return hits.filter(function (h) {
+    return !hits.some(function (o) {
+      return o !== h && o.toks.length > h.toks.length && h.toks.every(function (t) { return o.toks.indexOf(t) >= 0; });
+    });
+  }).map(function (h) { return h.park; });
+}
+
+/** Dates (yyyy-MM-dd) of an event that fall inside the window set. */
+function eventDatesInWindow_(ev, windowDates) {
+  const out = [];
+  const start = String(ev.start || '').slice(0, 10);
+  if (ev.allDay) {
+    const end = String(ev.end || '').slice(0, 10);
+    for (let d = start, n = 0; d && d < end && n < 30; d = dayShift_(d, 1), n++) {
+      if (windowDates.indexOf(d) >= 0) out.push(d);
+    }
+    if (!out.length && start && windowDates.indexOf(start) >= 0 && !(end > start)) out.push(start);
+  } else if (windowDates.indexOf(start) >= 0) {
+    out.push(start);
+  }
+  return out;
+}
+
+/** Unique {date, park} pairs from events, soonest first, capped. */
+function parkDaysFromEvents_(events, parks, windowDates) {
+  const seen = {};
+  const out = [];
+  (events || []).forEach(function (ev) {
+    const dates = eventDatesInWindow_(ev, windowDates);
+    if (!dates.length) return;
+    const text = String(ev.title || '') + ' ' + String(ev.location || '');
+    matchParks_(text, parks).forEach(function (p) {
+      dates.forEach(function (date) {
+        const k = p.id + '|' + date;
+        if (seen[k]) return;
+        seen[k] = true;
+        out.push({ date: date, park: p });
+      });
+    });
+  });
+  out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.park.name < b.park.name ? -1 : 1); });
+  return out.slice(0, MAX_PARK_DAYS);
+}
+
+function parksGet_(path) {
+  const res = UrlFetchApp.fetch(PARKS_API + path, { muteHttpExceptions: true, headers: { Accept: 'application/json' } });
+  const code = res.getResponseCode();
+  if (code !== 200) throw new Error('themeparks http ' + code);
+  return JSON.parse(res.getContentText());
+}
+
+/** Flat list of {id, name} parks from the destinations list, cached 24 h. */
+function loadParkList_(cache) {
+  const hit = cacheReadBig_(cache, 'hl-parks-dest-v3');
+  if (hit) return hit;
+  const j = parksGet_('/destinations');
+  const out = [];
+  ((j && j.destinations) || []).forEach(function (d) {
+    ((d && d.parks) || []).forEach(function (p) {
+      if (p && p.id && p.name) out.push({ id: String(p.id), name: String(p.name) });
+    });
+  });
+  if (out.length) cacheWriteBig_(cache, 'hl-parks-dest-v3', out, DEST_CACHE_SECONDS);
+  return out;
+}
+
+/** Compact schedule: {timezone, schedule:[{date,type,open,close}]}, cached 6 h. */
+function loadSchedule_(cache, parkId) {
+  const key = 'hl-parks-sched-' + parkId;
+  const hit = cacheReadBig_(cache, key);
+  if (hit) return hit;
+  const j = parksGet_('/entity/' + encodeURIComponent(parkId) + '/schedule');
+  const out = {
+    timezone: j && j.timezone ? String(j.timezone) : null,
+    schedule: ((j && j.schedule) || []).filter(function (s) { return s && s.date; }).map(function (s) {
+      return { date: String(s.date), type: String(s.type || ''), open: s.openingTime || null, close: s.closingTime || null };
+    })
+  };
+  cacheWriteBig_(cache, key, out, SCHEDULE_CACHE_SECONDS);
+  return out;
+}
+
+/** Compact live data: [{name, type, status, wait, times:[startTime]}], cached 5 min. */
+function loadLive_(cache, parkId) {
+  const key = 'hl-parks-live-' + parkId;
+  const hit = cacheReadBig_(cache, key);
+  if (hit) return hit;
+  const j = parksGet_('/entity/' + encodeURIComponent(parkId) + '/live');
+  const out = ((j && j.liveData) || []).filter(function (e) { return e && e.name; }).map(function (e) {
+    const stand = e.queue && e.queue.STANDBY;
+    return {
+      name: String(e.name).slice(0, 80),
+      type: String(e.entityType || ''),
+      status: String(e.status || ''),
+      wait: stand && typeof stand.waitTime === 'number' && isFinite(stand.waitTime) ? stand.waitTime : null,
+      times: (e.showtimes || []).map(function (t) { return t && t.startTime; }).filter(Boolean).map(String)
+    };
+  });
+  cacheWriteBig_(cache, key, out, LIVE_CACHE_SECONDS);
+  return out;
+}
+
+/** hours and early entry for a date from a compact schedule. Pure. Either may be null. */
+function parkHours_(schedule, date) {
+  const rows = (schedule || []).filter(function (s) { return s.date === date; });
+  const t = function (s) { return Date.parse(s); };
+  const valid = function (r) { return r.open && r.close && isFinite(t(r.open)) && isFinite(t(r.close)); };
+  const ops = rows.filter(function (r) { return r.type === 'OPERATING' && valid(r); });
+  let hours = null;
+  if (ops.length) {
+    const open = ops.reduce(function (a, b) { return t(b.open) < t(a.open) ? b : a; });
+    const close = ops.reduce(function (a, b) { return t(b.close) > t(a.close) ? b : a; });
+    hours = { open: open.open, close: close.close };
+  }
+  let early = null;
+  if (hours) {
+    const ex = rows.filter(function (r) { return r.type === 'EXTRA_HOURS' && valid(r) && t(r.open) < t(hours.open); });
+    if (ex.length) {
+      const first = ex.reduce(function (a, b) { return t(b.open) < t(a.open) ? b : a; });
+      early = { open: first.open, close: first.close };
+    }
+  }
+  return { hours: hours, early: early };
+}
+
+/** Local yyyy-MM-dd of an ISO time in a time zone (falls back to the script zone). */
+function localDateIn_(iso, zone, fallbackTz) {
+  const ms = Date.parse(iso);
+  if (!isFinite(ms)) return null;
+  try { return Utilities.formatDate(new Date(ms), zone || fallbackTz, 'yyyy-MM-dd'); } catch (err) {
+    return Utilities.formatDate(new Date(ms), fallbackTz, 'yyyy-MM-dd');
+  }
+}
+
+/** SHOW entities with showtimes on `date` (park-local), sorted, max MAX_SHOWS. Pure. */
+function parkShows_(live, date, zone, fallbackTz) {
+  const out = [];
+  (live || []).forEach(function (e) {
+    if (e.type !== 'SHOW') return;
+    const times = (e.times || []).filter(function (t) { return localDateIn_(t, zone, fallbackTz) === date; })
+      .sort(function (a, b) { return Date.parse(a) - Date.parse(b); });
+    if (times.length) out.push({ name: e.name, times: times });
+  });
+  out.sort(function (a, b) { return Date.parse(a.times[0]) - Date.parse(b.times[0]); });
+  return out.slice(0, MAX_SHOWS);
+}
+
+/** Top standby waits among operating attractions. Pure. */
+function parkWaits_(live) {
+  return (live || []).filter(function (e) {
+    return e.type === 'ATTRACTION' && e.status === 'OPERATING' && typeof e.wait === 'number';
+  }).sort(function (a, b) { return b.wait - a.wait; }).slice(0, MAX_WAITS).map(function (e) {
+    return { name: e.name, minutes: e.wait };
+  });
+}
+
+function parksFeature_(events, nowMs, tz) {
+  if (!ENABLE_PARKS) return { ok: false, error: 'disabled' };
+  const today = todayIn_(nowMs, tz);
+  const windowDates = [];
+  for (let i = 0; i < PARK_WINDOW_DAYS; i++) windowDates.push(dayShift_(today, i));
+  // Cheap pre-check so a quiet calendar costs no network calls at all.
+  const candidates = (events || []).filter(function (ev) { return eventDatesInWindow_(ev, windowDates).length; });
+  if (!candidates.length) return { ok: true, source: 'themeparks.wiki', days: [] };
+
+  const cache = cacheOf_();
+  let list;
+  try { list = loadParkList_(cache); } catch (err) { return { ok: false, error: shortError_(err) }; }
+  const pairs = parkDaysFromEvents_(candidates, list, windowDates);
+
+  const days = [];
+  let failures = 0;
+  const bundles = {};
+  pairs.forEach(function (pair) {
+    const id = pair.park.id;
+    if (!bundles[id]) {
+      const b = { schedule: null, live: null };
+      try { b.schedule = loadSchedule_(cache, id); } catch (err) { b.scheduleErr = true; }
+      try { b.live = loadLive_(cache, id); } catch (err) { b.liveErr = true; }
+      bundles[id] = b;
+    }
+    const b = bundles[id];
+    if (b.scheduleErr && b.liveErr) { failures++; return; }
+    const zone = (b.schedule && b.schedule.timezone) || tz;
+    const hrs = b.schedule ? parkHours_(b.schedule.schedule, pair.date) : { hours: null, early: null };
+    days.push({
+      date: pair.date,
+      parkId: id,
+      name: pair.park.name,
+      timezone: zone,
+      hours: hrs.hours,
+      early: hrs.early,
+      shows: b.live ? parkShows_(b.live, pair.date, zone, tz) : [],
+      waits: b.live && pair.date === today ? parkWaits_(b.live) : []
+    });
+  });
+  if (!days.length && failures) return { ok: false, error: 'themeparks unavailable' };
+  return { ok: true, source: 'themeparks.wiki', days: days };
+}
+
+// ---------------------------------------------------------------- trip drive
+
+function tripDriveFeature_(tripParam, tripDate, from, nowMs, tz) {
+  if (!ENABLE_TRIP_DRIVE) return { ok: false, error: 'disabled' };
+  const trip = parseFromParam_(tripParam);
+  if (!trip || !/^\d{4}-\d{2}-\d{2}$/.test(String(tripDate || '')) || !from) return { ok: false, error: 'bad_params' };
+  const cache = cacheOf_();
+  const key = ('td|' + from.lat.toFixed(3) + ',' + from.lng.toFixed(3) + '|' + trip.lat.toFixed(3) + ',' + trip.lng.toFixed(3) + '|' + tripDate).slice(0, 240);
+  const hit = cacheRead_(cache, key);
+  if (hit) return hit;
+
+  const wanted = Utilities.parseDate(tripDate + ' ' + ('0' + TRIP_DEPART_HOUR).slice(-2) + ':00', tz, 'yyyy-MM-dd HH:mm');
+  const depart = new Date(Math.max(wanted.getTime(), nowMs));
+  let res;
+  try {
+    res = Maps.newDirectionFinder()
+      .setOrigin(from.lat, from.lng)
+      .setDestination(trip.lat, trip.lng)
+      .setMode(Maps.DirectionFinder.Mode.DRIVING)
+      .setDepart(depart)
+      .getDirections();
+  } catch (err) { return { ok: false, error: shortError_(err) }; }
+  const route = res && res.routes && res.routes[0];
+  const leg = route && route.legs && route.legs[0];
+  const dur = leg && (leg.duration_in_traffic || leg.duration);
+  if (!leg || !dur || !(dur.value >= 0) || !leg.distance) return { ok: false, error: 'no_route' };
+  const miles = Math.round((leg.distance.value / 1609.344) * 10) / 10;
+  const result = miles < TRIP_MIN_MILES
+    ? { ok: false, error: 'too_close' }
+    : {
+      ok: true,
+      minutes: Math.round(dur.value / 60),
+      miles: miles,
+      summary: String((route && route.summary) || '').slice(0, 80),
+      departAt: Utilities.formatDate(depart, tz, "yyyy-MM-dd'T'HH:mm:ssXXX")
+    };
+  cacheWrite_(cache, key, result, TRIP_CACHE_SECONDS);
+  return result;
+}
+
+// ---------------------------------------------------------------- birthdays (People API)
+
+function peopleGet_(url) {
+  const res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  const code = res.getResponseCode();
+  if (code === 401 || code === 403) throw new Error('contacts access not approved (redeploy and approve) or People API off');
+  if (code !== 200) throw new Error('people http ' + code);
+  return JSON.parse(res.getContentText());
+}
+
+/** One compact {name, month, day, year|null} per contact that has a usable birthday. Pure. */
+function compactContacts_(connections) {
+  const out = [];
+  (connections || []).forEach(function (p) {
+    const names = (p && p.names) || [];
+    const name = String((names[0] && (names[0].displayName || names[0].givenName)) || '').trim().slice(0, 60);
+    if (!name) return;
+    const bdays = ((p && p.birthdays) || []).map(function (b) { return b && b.date; })
+      .filter(function (d) { return d && d.month >= 1 && d.month <= 12 && d.day >= 1 && d.day <= 31; });
+    if (!bdays.length) return;
+    const d = bdays.filter(function (x) { return x.year; })[0] || bdays[0];
+    out.push({ name: name, month: d.month, day: d.day, year: d.year > 1800 ? d.year : null });
+  });
+  return out;
+}
+
+/** Birthdays within `windowDays` of today (inclusive), soonest first. Pure. */
+function upcomingBirthdays_(contacts, today, windowDays) {
+  const tp = today.split('-').map(Number);
+  const todayUtc = Date.UTC(tp[0], tp[1] - 1, tp[2]);
+  const out = [];
+  (contacts || []).forEach(function (c) {
+    let occ = Date.UTC(tp[0], c.month - 1, c.day);
+    if (occ < todayUtc) occ = Date.UTC(tp[0] + 1, c.month - 1, c.day);
+    const daysAway = Math.round((occ - todayUtc) / 86400000);
+    if (daysAway > windowDays) return;
+    const od = new Date(occ);
+    const year = od.getUTCFullYear();
+    out.push({
+      name: c.name,
+      date: year + '-' + ('0' + (od.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + od.getUTCDate()).slice(-2),
+      daysAway: daysAway,
+      turning: c.year && year >= c.year ? year - c.year : null
+    });
+  });
+  out.sort(function (a, b) { return a.daysAway - b.daysAway || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
+  return out;
+}
+
+function loadContacts_(cache) {
+  const hit = cacheReadBig_(cache, 'hl-bdays-v3');
+  if (hit) return hit;
+  const all = [];
+  let token = '';
+  for (let page = 0; page < BIRTHDAY_PAGES; page++) {
+    const j = peopleGet_(PEOPLE_API + '?personFields=names,birthdays&pageSize=1000' + (token ? '&pageToken=' + encodeURIComponent(token) : ''));
+    compactContacts_(j && j.connections).forEach(function (c) { all.push(c); });
+    token = j && j.nextPageToken;
+    if (!token) break;
+  }
+  cacheWriteBig_(cache, 'hl-bdays-v3', all, BIRTHDAY_CACHE_SECONDS);
+  return all;
+}
+
+function birthdaysFeature_(nowMs, tz) {
+  if (!ENABLE_BIRTHDAYS) return { ok: false, error: 'disabled' };
+  let contacts;
+  try { contacts = loadContacts_(cacheOf_()); } catch (err) { return { ok: false, error: shortError_(err) }; }
+  return { ok: true, upcoming: upcomingBirthdays_(contacts, todayIn_(nowMs, tz), BIRTHDAY_DAYS) };
 }
