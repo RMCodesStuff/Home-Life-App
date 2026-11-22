@@ -719,9 +719,9 @@ function wire() {
 function boot() {
   applyTheme(state.settings.theme);
   wire();
+  initPlanUI(planHost); // before initSettings: the settings sheet paints the plan section as it builds
   initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus, reload: reloadSource });
   pruneTripChecks();
-  initPlanUI(planHost);
   initPlanSheet();
   offerPlanFromHash();
   window.addEventListener('hashchange', offerPlanFromHash); // a plan link opened while the app is already running
