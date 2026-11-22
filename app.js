@@ -1,16 +1,24 @@
 // Home Life — entry module: boot, state, refresh loop, wiring.
 import { loadSettings, saveSettings, cloneSettings, getJSON, setJSON, remove, KEYS, wxKey, aqKey, alKey, pruneCaches } from './js/store.js';
-import { localNow, datePart, diffDays, addDays } from './js/time.js';
+import { localNow, datePart, diffDays, addDays, dowShort } from './js/time.js';
 import { fetchRawForecast, fetchAirQuality, fetchAlerts, normalize } from './js/weather.js';
 import { makeGeocoder, cachedGeocode } from './js/geo.js';
 import { fetchCalendar, localizeEvents, describeCalendarError } from './js/calendar.js';
 import { detectTrips, travelLine, tripsToForecast, placeKey, withManualTrip } from './js/travel.js';
 import { bridgeTrip, checksKey, setCheck } from './js/tripprep.js';
 import { eveningOn, tomorrowEdition } from './js/evening.js';
-import { composeTrip } from './js/compose.js';
+import { composeTrip, composeHome, fineWithHome } from './js/compose.js';
+import { calendarList, tagMap, filterEvents } from './js/calendars.js';
+import { fbStatus, fbGetDoc, fbGetDocs } from './js/fb.js';
+import { mealPlanPath, recipePath, rackUserPath, RACK_LOCAL_KEY } from './js/connections.js';
+import { recipeIdsFor, slimRecipe, slotKey, MEALS, mealsForDay } from './js/meals.js';
+import { pickSummary } from './js/workout.js';
+import { radarWanted, tileGrid, latestRadar } from './js/phoenix.js';
+import { readAloudText, toggleSpeech, canSpeak } from './js/speech.js';
+import { relTime } from './js/time.js';
 import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
-import { renderAll } from './js/render.js';
+import { renderAll, clockAt } from './js/render.js';
 import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker } from './js/settings.js';
 
 const AI_MAX_AGE = 3 * 3600 * 1000;
@@ -21,6 +29,7 @@ const els = {
   hourly: document.getElementById('hourly'),
   week: document.getElementById('week'),
   fine: document.getElementById('fine'),
+  rundown: document.getElementById('rundown'),
   dialog: document.getElementById('settings'),
   toast: document.getElementById('toast'),
 };
@@ -42,6 +51,12 @@ const state = {
   alertOpen: false,
   lastRefresh: 0,
   showToday: '', // the date on which "show today" was tapped during evening mode (per session)
+  meals: null, // {at, dates, plan: {slot: recipeId}, recipes: {id: {name, ingredients}}} (cached, read-only)
+  mealStatus: null, // {connected, kind}
+  rack: null, // {at, summary} from the rack timer account (the device copy is read live from localStorage)
+  rackStatus: null,
+  radar: null, // {at, frame}
+  speaking: false,
 };
 try { state.showToday = sessionStorage.getItem('hl.showToday') || ''; } catch { /* ignore */ }
 
@@ -97,7 +112,8 @@ function buildCtx() {
   const show = state.settings.show;
   const bridge = state.cal && state.cal.bridge;
   const base = { now: localNow(model.offset), units: state.settings.units, model, homeModel: home, tripModels: state.tripModels, travel: state.travel, events: [] };
-  const raw = state.cal ? (show.leaveBy ? state.cal.events : state.cal.events.map(({ travel, ...rest }) => rest)) : [];
+  const visible = state.cal ? filterEvents(state.cal.events, state.settings.calendars) : [];
+  const raw = show.leaveBy ? visible : visible.map(({ travel, ...rest }) => rest);
   const events = localizeEvents(raw, (date) => modelForDate(base, date).offset);
   return {
     ...base,
@@ -133,9 +149,25 @@ function buildView({ fade = false } = {}) {
     home: { lat: h.lat, lon: h.lon, name: h.name },
     coordsFor: cachedGeocode,
     checks: (id) => getJSON(checksKey(id)) || {},
+    briefingPacking: s.show.rundown !== false && bridge && bridge.briefing && bridge.briefing.ok && bridge.briefing.data.trip ? bridge.briefing.data.trip.packing : null,
   });
+  const summary = currentSummary();
+  const meals = state.meals && Array.isArray(state.meals.dates) && state.meals.dates.includes(target) ? state.meals : null;
+  const homeFx = composeHome(ctx, { target, today, evening: !!tomorrow, settings: s, bridge, meals, summary });
+  homeFx.workoutSource = summary ? 'rack timer' : 'no timer plan yet';
+  let radar = null;
+  if (homeFx.radar && state.radar && state.radar.frame) {
+    const pl = ctx.model.place;
+    radar = { grid: tileGrid(pl.lat, pl.lon, 7), frame: state.radar.frame, ago: state.radar.frame.time ? relTime(new Date(state.radar.frame.time * 1000).toISOString(), Date.now()) : '' };
+  }
+  written = { ...written, fine: fineWithHome(written.fine, homeFx.fine, today) };
   return {
     status: 'ready',
+    home: homeFx,
+    radar,
+    tags: tagMap(calendarList(state.cal ? state.cal.events : [], s.calendars)),
+    canSpeak: canSpeak(),
+    speaking: state.speaking,
     edition: tomorrow ? 'tomorrow' : 'today',
     evening,
     tomorrow,
@@ -214,7 +246,7 @@ async function runTravel(maxUncached) {
   let detected = null;
   if (state.cal) {
     try {
-      detected = await detectTrips({ events: state.cal.events, home: { lat: h.lat, lon: h.lon }, today: homeToday(), geocode: makeGeocoder({ maxUncached }) });
+      detected = await detectTrips({ events: filterEvents(state.cal.events, state.settings.calendars), home: { lat: h.lat, lon: h.lon }, today: homeToday(), geocode: makeGeocoder({ maxUncached }) });
     } catch { detected = state.travel; } // keep previous
   }
   // a trip typed in settings works without the calendar, and wins over detected trips on the same dates
@@ -230,14 +262,80 @@ function restoreFromCache() {
   state.cal = cal && cal.data && cal.url === s.calendar.url ? { events: cal.data.events, fetchedAt: cal.at, bridge: cal.data.bridge || null } : null;
   const ai = getJSON(KEYS.ai);
   state.ai = ai && ai.result ? ai : null;
+  const meals = getJSON('hl.meals');
+  state.meals = meals && meals.plan ? meals : null;
+  const rack = getJSON('hl.rack');
+  state.rack = rack && rack.summary ? rack : null;
+  const radar = getJSON('hl.radar');
+  state.radar = radar && radar.frame && Date.now() - radar.at < 30 * 60 * 1000 ? radar : null;
+}
+
+// ---------- meal plan, rack timer, radar ----------
+const withTimeout = (p, ms = 12000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('timeout'), { kind: 'network' })), ms))]);
+
+/** The rack timer's summary: the newer of this device's copy (same origin) and the account's. */
+function currentSummary() {
+  return pickSummary(getJSON(RACK_LOCAL_KEY), state.rack && state.rack.summary);
+}
+
+/** Today's to the day after tomorrow's meals and their recipes, read-only, when the meal plan is connected. */
+async function loadMeals() {
+  if (state.settings.show.dinner === false) return;
+  const st = await fbStatus('meals');
+  state.mealStatus = st;
+  if (!st.connected) return;
+  const today = homeToday();
+  const dates = [today, addDays(today, 1), addDays(today, 2)];
+  try {
+    const plan = (await withTimeout(fbGetDoc('meals', mealPlanPath()))) || {};
+    const ids = recipeIdsFor(plan, dates);
+    const docs = ids.length ? await withTimeout(fbGetDocs('meals', ids.map(recipePath))) : [];
+    const recipes = {};
+    docs.forEach((d, i) => { const r = slimRecipe(d.data); if (r && r.name) recipes[ids[i]] = r; });
+    const slots = {};
+    for (const d of dates) for (const m of MEALS) { const k = slotKey(d, m); if (typeof plan[k] === 'string' && plan[k]) slots[k] = plan[k]; }
+    state.meals = { at: Date.now(), dates, plan: slots, recipes };
+    setJSON('hl.meals', state.meals);
+    state.mealStatus = { ...st, at: state.meals.at };
+  } catch (e) { state.mealStatus = { ...st, kind: e.kind || 'other', error: true }; }
+}
+
+/** The summary the rack timer wrote to its account (users/{uid}.homelife), when connected. */
+async function loadRack() {
+  if (state.settings.show.workout === false) return;
+  const st = await fbStatus('rack');
+  state.rackStatus = st;
+  if (!st.connected || !st.uid) return;
+  try {
+    const doc = await withTimeout(fbGetDoc('rack', rackUserPath(st.uid)));
+    if (doc && doc.homelife && typeof doc.homelife === 'object') { state.rack = { at: Date.now(), summary: doc.homelife }; setJSON('hl.rack', state.rack); }
+  } catch (e) { state.rackStatus = { ...st, kind: e.kind || 'other' }; }
+}
+
+/** RainViewer's latest radar frame, only when the radar strip would show (cached 5 minutes). */
+async function loadRadar() {
+  if (state.settings.show.radar === false || !state.home) return;
+  const ctx = buildCtx();
+  if (!radarWanted(ctx.model, ctx.now, ctx.model.alerts)) return;
+  const c = getJSON('hl.radar');
+  if (c && c.frame && Date.now() - c.at < 5 * 60 * 1000) { state.radar = c; return; }
+  try {
+    const res = await withTimeout(fetch('https://api.rainviewer.com/public/weather-maps.json'), 10000);
+    const frame = res.ok ? latestRadar(await res.json()) : null;
+    if (frame) { state.radar = { at: Date.now(), frame }; setJSON('hl.radar', state.radar); }
+  } catch { /* the strip stays hidden */ }
+}
+
+async function loadExtras() {
+  await Promise.allSettled([loadMeals(), loadRack(), loadRadar()]);
 }
 
 /** Keep a bridge answer (and what it was asked: `from` and the trip). */
 function applyCalendar(value, asked) {
-  const { version, features, inbox, oura, parks, tripDrive } = value;
+  const { version, features, inbox, oura, parks, tripDrive, briefing, birthdays } = value;
   const trip = asked.trip ? { id: asked.trip.id, date: asked.trip.date } : null;
   const from = asked.from ? { lat: asked.from.lat, lon: asked.from.lon } : null;
-  const bridge = { version, features, inbox, oura, parks, tripDrive, tripReq: trip, fromReq: from };
+  const bridge = { version, features, inbox, oura, parks, tripDrive, briefing, birthdays, tripReq: trip, fromReq: from };
   state.cal = { events: value.events, fetchedAt: value.fetchedAt, bridge };
   setJSON(KEYS.cal, { at: value.fetchedAt, url: state.settings.calendar.url, data: { events: value.events, bridge } });
 }
@@ -313,6 +411,8 @@ async function refresh({ manual = false } = {}) {
       await loadTripModels(true);
       if (state.travel || hadTravel) render();
       await refetchIfTravelChanged();
+      await loadExtras();
+      render();
       await maybeAI();
     }
     state.loading = false;
@@ -320,6 +420,13 @@ async function refresh({ manual = false } = {}) {
     void manual;
   })();
   try { await refreshing; } finally { refreshing = null; state.loading = false; }
+}
+
+/** The v3 facts Claude may weave in (today's view only). */
+function aiExtras(view) {
+  const h = view.home || {};
+  const park = view.trip && view.trip.park && view.trip.park[0];
+  return { workout: h.workout, dinner: h.dinner, birthdays: h.birthdays, rundownNote: h.rundown ? h.rundown.note : '', parkDay: park || null };
 }
 
 function eveningEditionNow() {
@@ -334,8 +441,10 @@ async function maybeAI() {
   if (!a.enabled || !a.key || !state.home || aiInFlight) return;
   if (eveningEditionNow()) return; // tomorrow's edition is written on-device only
   if (state.aiFailAt && Date.now() - state.aiFailAt < 30 * 60 * 1000) return; // don't retry a failure on every refresh
-  const ctx = buildCtx();
-  const fp = fingerprint(ctx);
+  const view = buildView();
+  const ctx = view.ctx;
+  const extras = aiExtras(view);
+  const fp = fingerprint(ctx, extras);
   const cached = getJSON(KEYS.ai);
   if (cached && cached.fp === fp && cached.model === a.model && Date.now() - cached.at < AI_MAX_AGE) {
     state.ai = cached; return;
@@ -343,7 +452,7 @@ async function maybeAI() {
   aiInFlight = true;
   try {
     const onDevice = writeAll(ctx);
-    const facts = buildFacts(ctx, onDevice);
+    const facts = buildFacts(ctx, onDevice, extras);
     const result = await writeWithClaude({ apiKey: a.key, model: a.model, facts });
     state.ai = { fp, at: Date.now(), model: a.model, result };
     setJSON(KEYS.ai, state.ai);
@@ -356,13 +465,38 @@ async function maybeAI() {
   } finally { aiInFlight = false; }
 }
 
+/** What "read it to me" reads: the edition on screen (headline, narrative, chips), plus the rundown note in the morning. */
+function speechText(view) {
+  if (view.status !== 'ready') return '';
+  const h = view.home || {};
+  if (view.tomorrow) {
+    const t = view.tomorrow;
+    return readAloudText({ lead: `tomorrow, ${t.headline_lead}`, accent: t.headline_accent, narrative: t.narrative, chips: [...t.chips, ...(h.chipsTomorrow || [])] });
+  }
+  const w = view.written;
+  const extra = h.chipsToday || [];
+  const chips = [
+    { label: 'umbrella', text: w.umbrella }, { label: 'wear', text: w.wear },
+    w.leave_chip ? { label: 'leave', text: w.leave_chip.replace(/^leave\s+/, '') } : null,
+    ...extra.filter((c) => c.after === 'leave'),
+    { label: 'best window', text: w.best_window },
+    w.inbox_chip ? { label: 'inbox', text: w.inbox_chip } : null,
+    ...extra.filter((c) => c.after !== 'leave'),
+  ].filter(Boolean);
+  return readAloudText({ lead: w.headline_lead, accent: w.headline_accent, narrative: w.narrative, chips, note: h.rundown ? h.rundown.note : '' });
+}
+
 // ---------- settings ----------
 function onSettingsSaved(st, kind) {
   state.settings = cloneSettings(st);
   saveSettings(state.settings);
   switch (kind) {
     case 'theme': applyTheme(state.settings.theme); break;
-    case 'label': case 'show': case 'evening': case 'checklist': render(); refreshStatus(); break;
+    case 'label': case 'show': case 'evening': case 'checklist': case 'workout': case 'chores': case 'phoenix': render(); refreshStatus(); break;
+    case 'calendars': // the filter also changes which trips exist
+      runTravel(0).then(() => loadTripModels(false)).then(() => render());
+      render();
+      break;
     case 'trip':
       // a manual trip changes travel, the forecasts to load and what the bridge is asked
       runTravel(0).then(() => loadTripModels(true)).then(() => { render(); refreshStatus(); refresh(); });
@@ -392,6 +526,16 @@ function onSettingsSaved(st, kind) {
   }
 }
 
+/** After connecting or disconnecting an account in settings. */
+async function reloadSource(kind) {
+  if (kind === 'meals-off') { state.meals = null; state.mealStatus = null; remove('hl.meals'); }
+  else if (kind === 'rack-off') { state.rack = null; state.rackStatus = null; remove('hl.rack'); }
+  else if (kind === 'meals') await loadMeals();
+  else if (kind === 'rack') await loadRack();
+  render();
+  refreshStatus();
+}
+
 function getStatus() {
   const off = state.home ? state.home.offset : 0;
   const b = state.cal && state.cal.bridge;
@@ -401,6 +545,24 @@ function getStatus() {
     oura: b ? { version: b.version, data: b.oura } : null,
     today: homeToday(),
     trips: state.travel ? state.travel.trips.map((t) => ({ city: t.city, departDate: t.departDate, returnDate: t.returnDate, manual: !!t.manual })) : [],
+    calendars: calendarList(state.cal ? state.cal.events : [], state.settings.calendars),
+    bridgeExtras: b && b.version >= 3 ? { briefing: b.briefing, birthdays: b.birthdays, parks: b.parks, tripDrive: b.tripDrive } : null,
+    meals: (() => {
+      const ms = state.mealStatus || {};
+      const today = homeToday();
+      const tonight = state.meals && state.meals.dates && state.meals.dates.includes(today) ? mealsForDay(state.meals.plan, state.meals.recipes, today).dinner : null;
+      return { connected: !!ms.connected, kind: ms.kind || '', at: state.meals ? clockAt(state.meals.at, off) : '', dinner: tonight ? tonight.name.toLowerCase() : '' };
+    })(),
+    rack: (() => {
+      const sum = currentSummary();
+      let when = '';
+      if (sum && sum.updatedAt) {
+        const ms = Date.parse(sum.updatedAt);
+        const day = datePart(localNow(off, ms));
+        when = `${day === homeToday() ? '' : `${dowShort(day)} `}${clockAt(ms, off)}`;
+      }
+      return { connected: !!(state.rackStatus && state.rackStatus.connected), source: sum && state.rack && state.rack.summary && sum.updatedAt === state.rack.summary.updatedAt ? 'account' : 'device', updatedAt: when };
+    })(),
   };
 }
 
@@ -459,6 +621,9 @@ function wire() {
       if (!state.showToday) return;
       maybeAI();
     } else if (a === 'open-settings-trip') openSettings('trip');
+    else if (a === 'speak') {
+      toggleSpeech(speechText(buildView()), { onChange: (on) => { state.speaking = on; render(); } });
+    }
   });
   document.addEventListener('change', (e) => {
     const box = e.target.closest && e.target.closest('input[data-check]');
@@ -485,7 +650,7 @@ function wire() {
 function boot() {
   applyTheme(state.settings.theme);
   wire();
-  initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus });
+  initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus, reload: reloadSource });
   pruneTripChecks();
   if (!state.settings.home) { render(); registerSW(); return; }
   restoreFromCache();

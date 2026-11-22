@@ -13,6 +13,13 @@ A morning weather report that preps you for your day. Open it and you get:
 - **Trip prep**, from 3 days before an overnight trip: the drive there, what to pack (from the forecast where you're going), a before-you-go checklist you tick off, and calendar conflicts back home
 - **Park days**: theme-park hours, early entry, showtimes with the weather at each show, today's longest waits and a warm-layer nudge for cold evenings
 - **Tomorrow's edition** in the evening: tomorrow's high, a written forecast that starts at 7am, your first event and when to leave, what to wear and tonight's low
+- **The rundown**, from a daily Claude run: a short note about the day, money (bills due, budget pace, over-budget categories, notable charges), fantasy football on game days, and a playlist
+- **Birthdays** from your Google contacts in the next two weeks
+- **Dinner tonight** from the meal planner, with a thaw reminder the evening before and an eat-by time on busy evenings
+- **Today's workout** from the rack session timer: which session, the best free window in your calendar, and a button that opens the timer on it
+- **Whose event**: calendar labels and colors, and a filter for which calendars show (see "Kate's view")
+- **Phoenix home pack** (opt-in): power peak hours with a pre-cool time, skip-or-water advice, dust warnings, a rain radar strip, chore reminders and kid-friendly heat tips
+- **Read it to me**: the speaker button in the top card reads the forecast aloud
 
 It is travel-aware. If your calendar shows a trip (a hotel stay, or events far from home), or you add one in settings, the app uses the forecast for where you will be on those days.
 
@@ -75,6 +82,44 @@ On a day with a theme park on your calendar (an event titled or located at a par
 
 From 6pm (settings -> **Evening** sets the time, or turns it off) the top card previews tomorrow: the high, the sky, a forecast that starts at 7am, your first event with its leave-by time, what to wear and tonight's low. Your day lists tomorrow's events, and a park day shows tomorrow's park. **now 63° · show today** switches back for the rest of the evening. The evening edition is always written on-device (Claude is not called for it).
 
+## The rundown (daily Claude run)
+
+Each morning a scheduled Claude task (set up by the lead, managed at claude.ai under scheduled tasks) writes `home-life-briefing-YYYY-MM-DD.json` into a `Home Life` folder in Google Drive. The version 3 script reads the newest file (it needs the Drive read-only permission) and the app shows it as **The rundown** under the top card: a note, money, fantasy (only on game days or when there are waivers) and a playlist. Its packing ideas feed trip prep. It hides itself when the file is missing or older than yesterday, and says "from yesterday" when today's hasn't arrived yet. Settings -> Google shows why if the file can't be read (missing, too big, not valid JSON). Turn it off in settings -> Google.
+
+## Birthdays
+
+The version 3 script reads birthdays from your Google contacts (Contacts read-only permission). Birthdays in the next 14 days show at the top of Your day, and the evening before shows "tomorrow is pat's birthday". If Google says the People API is off for the script, open the script's Google Cloud project and enable the People API, then redeploy.
+
+## Dinner tonight (meal planner)
+
+Read-only, from the meal planner's Firestore (today's and tomorrow's meals and their recipes, cached on this device for offline):
+
+1. One-time: in the Firebase console for the meal planner (recipe-planner-bcd94): **Authentication -> Settings -> Authorized domains -> Add domain -> rmcodesstuff.github.io**.
+2. In the app: settings -> **Meal plan -> connect meal plan**, and sign in with the Google account you use in the meal planner.
+
+Your day ends with `dinner · chicken fried rice` (and breakfast and lunch when planned), and an **open meal plan** link. The evening before a dinner with raw meat or fish, a chip says what to move to the fridge. When an event starts between 5:30 and 8:30pm, the dinner row says when to eat by (its start, minus its drive, minus 15 minutes).
+
+## Today's workout (rack session timer)
+
+The rack timer (same site, so same browser storage) leaves a small summary for this app every time its log changes. Home Life reads it directly; to also see it from your other devices, settings -> **Workout -> connect rack timer account** (the timer's Firebase already allows this site). The card proposes a session (lighter on low readiness, the short version on workdays or after three days in a row, a hotel-room circuit when you're away, rest on park days), the best free window in your calendar (it steers around a hot garage), and a **start in rack timer** button that opens the timer on that session. Pick your work calendars and a preferred time of day in settings -> Workout.
+
+## Kate's view: calendars and whose event
+
+Settings -> **Calendars** lists the calendars your script sends. Give each a short label and one of five colors (your busiest calendar has no tag; others are tagged with their name, like `kate`), and switch off any calendar to hide it everywhere: Your day, trip detection, leave-by times, the workout window and tomorrow's edition.
+
+Kate's view is the same app on Kate's phone: she installs it, pastes the same Google link (or deploys her own script for her own calendars and inbox), picks her calendars in settings -> Calendars, and turns off what isn't hers (waiting on you, Oura, the workout, the rundown) with the switches in settings.
+
+## Phoenix home pack
+
+All in settings -> **Home extras** and **Chores**; each piece can be switched off:
+
+- **Power peak** (off by default): your utility's peak windows (default weekdays 4–7pm), active in chosen months (default May–October) or only when the high reaches 90°F. Chip: `power peak 4–7pm · pre-cool by 3:45, high 104`.
+- **Watering** (off by default): pick your watering days. On those days (and the evening before) the app says to skip when a quarter inch of rain is coming or fell yesterday, otherwise to water as usual with the week's evaporation. Also in the fine print.
+- **Dust**: a chip when PM10 tops 150 or dust tops 100 µg/m³, and a note in air quality.
+- **Radar**: when rain is 40% or more within 6 hours, or a weather alert is active, a small radar map shows under the hourly chart (OpenStreetMap tiles with RainViewer radar).
+- **Chores**: presets for trash night, recycling night, the AC filter (30 days) and pest control (90 days), or your own. Bins show the night before pickup (with a gust warning), with an optional holiday delay; interval chores show the morning they're due, and you mark them done in settings.
+- **Kid-friendly tips**: playground timing on 95°F days and a sunscreen reminder when UV reaches 8.
+
 ## Connect Oura (optional)
 
 Oura retired personal access tokens in December 2025, so this uses OAuth. One-time setup:
@@ -101,15 +146,17 @@ The key is stored only in your browser and sent only to `api.anthropic.com`. Cla
 - [National Weather Service](https://www.weather.gov/) alerts, US locations only
 - Gmail, Google Maps and your calendar through your own Apps Script; [Oura API v2](https://cloud.ouraring.com/v2/docs) if you connect a ring
 - [ThemeParks.wiki](https://themeparks.wiki/) park hours, showtimes and waits, through your Apps Script
+- [RainViewer](https://www.rainviewer.com/) radar frames and [OpenStreetMap](https://www.openstreetmap.org/copyright) map tiles for the radar strip (© OpenStreetMap contributors)
+- The meal planner and the rack session timer, read-only through their own Firebase projects, when you connect them
 - [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org/) for finding event locations. Data (c) OpenStreetMap contributors, ODbL. Lookups are rate-limited and cached.
 - Open-Meteo geocoding for city search
 - Fonts: Newsreader and DM Sans from Google Fonts
 
 ## Privacy
 
-Everything is stored in your browser's localStorage: home, settings (including a trip you add and your checklist), checklist ticks per trip, cached forecasts, calendar events, inbox, Oura and park results, geocoding results and your optional API key. There is no server and no analytics. Network requests go only to the data sources above, your own Apps Script URL, and `api.anthropic.com` if you enable Claude.
+Everything is stored in your browser's localStorage: home, settings (including a trip you add, your checklist, calendar labels and chores), checklist ticks per trip, cached forecasts, calendar events, inbox, Oura, park, rundown and birthday results, today's and tomorrow's meals, the rack timer summary, geocoding results and your optional API key. Signing in to the meal planner or the rack timer keeps a Google sign-in for those Firebase projects in this browser; disconnect removes it. There is no server and no analytics. Network requests go only to the data sources above, your own Apps Script URL, and `api.anthropic.com` if you enable Claude.
 
-The script returns event titles, times and locations; email senders, subjects and short snippets of up to 5 threads; package statuses; drive times (including the drive to a trip leaving soon, so the trip's coordinates are sent to the script); park hours, showtimes and waits for parks on your calendar; and Oura scores. Anyone who holds both the web app URL and the key can read all of that, so keep both private. Nothing is stored outside your Google account and your browser. Oura tokens live only in the script's properties. If you enable Claude, it receives senders, reasons and subjects, but no snippets.
+The script returns event titles, times and locations; email senders, subjects and short snippets of up to 5 threads; package statuses; drive times (including the drive to a trip leaving soon, so the trip's coordinates are sent to the script); park hours, showtimes and waits for parks on your calendar; the morning rundown (its note, the money line with bills, budget and notable charges, and fantasy lines); upcoming birthdays (names and dates) from your contacts; and Oura scores. Anyone who holds both the web app URL and the key can read all of that, so keep both private. Nothing is stored outside your Google account and your browser. Oura tokens live only in the script's properties. If you enable Claude, it receives senders, reasons and subjects, but no snippets; it also gets the workout proposal, tonight's dinner, upcoming birthdays (first names), the rundown's note and a park day's hours and shows, never money amounts.
 
 ## Local development
 

@@ -5,6 +5,7 @@ import { fetchCalendar, describeCalendarError } from './calendar.js';
 import { fmtMonthDay, fmtDateRange } from './time.js';
 import { parseChecklist, checklistItems } from './tripprep.js';
 import { eveningStart } from './evening.js';
+import { extraMarkup, wireExtras, refreshExtras } from './settings2.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
 
@@ -107,6 +108,7 @@ function markup(s) {
     <section class="set-sec" id="set-calendar" aria-labelledby="set-cal-h">
       <h3 id="set-cal-h">Google</h3>
       <p class="status" id="cal-status">not connected</p>
+      <p class="note tight" id="cal-extras" hidden></p>
       <div class="notice" id="cal-update" hidden><b>your google script is out of date.</b> <span id="cal-update-what"></span><ol>${UPDATE_STEPS}</ol></div>
       <ol class="steps" id="cal-steps">${STEPS}</ol>
       <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button>
@@ -124,6 +126,8 @@ function markup(s) {
       <p class="subhead">show in the app</p>
       <label class="switch" for="show-inbox"><input type="checkbox" id="show-inbox"${s.show.inbox ? ' checked' : ''}> show waiting on you</label>
       <label class="switch" for="show-leaveby"><input type="checkbox" id="show-leaveby"${s.show.leaveBy ? ' checked' : ''}> show leave-by times</label>
+      <label class="switch" for="show-rundown"><input type="checkbox" id="show-rundown"${s.show.rundown !== false ? ' checked' : ''}> show the rundown (from the daily claude run)</label>
+      <label class="switch" for="show-birthdays"><input type="checkbox" id="show-birthdays"${s.show.birthdays !== false ? ' checked' : ''}> show birthdays</label>
       <p class="note">anyone who has both the url and the key could read what the script returns: event titles, times and locations, email senders and subjects, drive times, park hours and oura scores. keep them private.</p>
     </section>
 
@@ -154,6 +158,7 @@ function markup(s) {
       <input type="time" id="evening-start" value="${esc(eveningStart(s.evening))}">
       <p class="note">from this time until midnight the top card previews tomorrow: the high, your first event, what to wear and tonight's low. "show today" switches back for the rest of the evening.</p>
     </section>
+    ${extraMarkup(s, seg)}
 
     <section class="set-sec" id="set-oura" aria-labelledby="set-oura-h">
       <h3 id="set-oura-h">Oura</h3>
@@ -179,6 +184,7 @@ function markup(s) {
       <h3 id="set-display-h">Display</h3>
       <fieldset class="seg"><legend>units</legend>${seg('units', [['imperial', '°F'], ['metric', '°C']], s.units)}</fieldset>
       <fieldset class="seg"><legend>theme</legend>${seg('theme', [['auto', 'auto'], ['dark', 'dark'], ['light', 'light']], s.theme)}</fieldset>
+      <label class="switch" for="show-speak"><input type="checkbox" id="show-speak"${s.show.speak !== false ? ' checked' : ''}> read it to me button</label>
     </section>
 
     <section class="set-sec" id="set-install" aria-labelledby="set-install-h">
@@ -274,6 +280,8 @@ function build() {
     refreshStatus();
   });
   toggle('show-tripprep', 'tripPrep'); toggle('show-parks', 'parks');
+  toggle('show-rundown', 'rundown'); toggle('show-birthdays', 'birthdays'); toggle('show-speak', 'speak');
+  wireExtras({ dialog, api, toggle });
   $('trip-checklist').addEventListener('change', (e) => {
     const st = api.getSettings(); st.trip.checklist = parseChecklist(e.target.value); api.save(st, 'checklist');
     e.target.value = checklistItems(st.trip.checklist).join('\n');
@@ -394,6 +402,13 @@ export function refreshStatus() {
     const v = st.bridge ? st.bridge.version : 3;
     dialog.querySelector('#cal-update-what').textContent = `the new version adds ${v < 2 ? 'inbox, drive times, ' : ''}park hours and the drive time for trips. google will ask for two more read-only permissions: drive (to read the daily rundown file) and contacts (for birthdays). to update:`;
   }
+  const extras = dialog.querySelector('#cal-extras');
+  if (extras) {
+    const lines = s.calendar.url ? bridgeProblems(st.bridgeExtras) : [];
+    extras.hidden = !lines.length;
+    extras.textContent = lines.join(' · ');
+  }
+  refreshExtras(dialog, api);
   const trip = dialog.querySelector('#trip-status');
   if (trip) {
     const m = s.trip.manual;
@@ -402,6 +417,27 @@ export function refreshStatus() {
       : next ? `from your calendar: ${esc(next.city.toLowerCase())}, ${esc(fmtDateRange(next.departDate, next.returnDate))}` : 'no trip added here';
   }
   refreshOura(s, st);
+}
+
+/** Plain words for the v3 features that failed (normal states like "disabled" or "too close" say nothing). Pure. */
+export function bridgeProblems(x) {
+  if (!x) return [];
+  const out = [];
+  const b = x.briefing;
+  if (b && !b.ok && b.error !== 'disabled') {
+    out.push(b.error === 'not_found' ? 'rundown: no file yet (the daily run writes one each morning)'
+      : b.error === 'too_big' ? 'rundown: the file is too big to read'
+        : b.error === 'bad_json' ? "rundown: the file isn't valid json" : `rundown: ${b.error}`);
+  }
+  const bd = x.birthdays;
+  if (bd && !bd.ok && bd.error !== 'disabled') out.push(`birthdays: ${bd.error}`);
+  const p = x.parks;
+  if (p && !p.ok && p.error !== 'disabled') out.push(p.error === 'themeparks unavailable' ? 'park hours: themeparks.wiki is unavailable right now' : `park hours: ${p.error}`);
+  const t = x.tripDrive;
+  if (t && !t.ok && !['disabled', 'too_close'].includes(t.error)) {
+    out.push(t.error === 'no_route' ? 'trip drive: no driving route found' : t.error === 'bad_params' || t.error === 'no_origin' ? "trip drive: the request was incomplete, it'll try again" : `trip drive: ${t.error}`);
+  }
+  return out;
 }
 
 function refreshOura(s, st) {

@@ -50,6 +50,8 @@ fields
 
 facts.inbox (count and up to 3 items) and facts.packages are things waiting on the person. the narrative may mention a package or something waiting only if it pairs naturally with the weather (a package arriving before the rain, say). otherwise leave them out: the app shows them as chips and a list.
 
+facts.workout (today's proposed session and window), facts.dinner (tonight's meal), facts.birthdays, facts.rundown_note (a note from this morning's rundown) and facts.park_day (a theme park today: hours and showtimes) are optional context, often null. the narrative may use one of them in a short clause when it pairs with the weather (a cool garage for the 6am workout, a chilly night for the 9:30 fireworks). never mention money or amounts. otherwise leave them out: the app shows them elsewhere.
+
 facts.on_device is a plainer version written by a program. use it only as a reference for format and length. improve on its phrasing; do not copy it, and do not contradict its numbers.
 
 style sample (a different day, for tone only)
@@ -77,8 +79,25 @@ function inboxFacts(inbox) {
   return { count: inbox.waiting.length, items: inbox.waiting.slice(0, 3).map((w) => ({ from: w.from, reason: w.reason, subject: clipStr(w.subject, 60) })) };
 }
 
-/** Compact facts for the model. Pure. */
-export function buildFacts(ctx, onDevice) {
+/** The v3 extras, trimmed for the model: no money, no ids, first names only. */
+export function extraFacts(x = {}) {
+  const w = x.workout;
+  const d = x.dinner;
+  const p = x.parkDay;
+  return {
+    workout: w && w.state ? {
+      state: w.state, session: [w.version, w.label].filter(Boolean).join(' · ') || null, minutes: w.min ?? null,
+      window: w.window ? `${w.window.start.slice(11)}-${w.window.end.slice(11)}` : null, why: (w.why || []).slice(0, 2),
+    } : null,
+    dinner: d && d.meals ? { tonight: d.meals.dinner ? d.meals.dinner.name : null, eat_by: d.eatBy || null } : null,
+    birthdays: (x.birthdays || []).slice(0, 3),
+    rundown_note: typeof x.rundownNote === 'string' ? x.rundownNote.slice(0, 300) : '',
+    park_day: p ? { name: p.name, hours: p.hours || null, shows: (p.shows || []).slice(0, 4) } : null,
+  };
+}
+
+/** Compact facts for the model. Pure. `extras` = {workout, dinner, birthdays, rundownNote, parkDay} (all optional). */
+export function buildFacts(ctx, onDevice, extras = {}) {
   const m = ctx.model;
   const today = datePart(ctx.now);
   const home = ctx.homeModel || m;
@@ -130,13 +149,14 @@ export function buildFacts(ctx, onDevice) {
     packages: ctx.inbox && ctx.inbox.ok ? ctx.inbox.packages.map((p) => ({ merchant: p.merchant, status: p.status })) : [],
     oura: ouraFacts(ctx.oura),
     alerts: (m.alerts || []).map((a) => ({ event: a.event, ends: a.ends })),
+    ...extraFacts(extras),
     on_device: stripFine(onDevice),
   };
 }
 const stripFine = (w) => { const { fine, ...rest } = w || {}; return rest; };
 
 /** Cache fingerprint: stable inside a 3-hour block so we never rewrite more than that often. */
-export function fingerprint(ctx) {
+export function fingerprint(ctx, extras = {}) {
   const today = datePart(ctx.now);
   const block = Math.floor(parseInt(ctx.now.slice(11, 13), 10) / 3) * 3;
   const start = `${today}T${String(block).padStart(2, '0')}:00`;
@@ -145,7 +165,9 @@ export function fingerprint(ctx) {
   const o = ctx.oura && ctx.oura.ok ? `${ctx.oura.readiness ? ctx.oura.readiness.score : ''}/${ctx.oura.sleep ? `${ctx.oura.sleep.score}/${ctx.oura.sleep.totalSec}` : ''}` : '';
   const waiting = ctx.inbox && ctx.inbox.ok ? ctx.inbox.waiting.map((w) => w.id).join(',') : '';
   const pk = ctx.inbox && ctx.inbox.ok ? ctx.inbox.packages.map((p) => `${p.merchant}:${p.status}`).join(',') : '';
-  return [today, block, ctx.model.place.name, ctx.units, hs.join(','), evs.join(','), o, waiting, pk].join('|');
+  const x = extraFacts(extras);
+  const more = [x.workout ? `${x.workout.session}@${x.workout.window}` : '', x.dinner ? x.dinner.tonight : '', x.birthdays.length, x.rundown_note ? x.rundown_note.length : 0, x.park_day ? x.park_day.name : ''].join(',');
+  return [today, block, ctx.model.place.name, ctx.units, hs.join(','), evs.join(','), o, waiting, pk, more].join('|');
 }
 
 export function friendlyAiError(e) {

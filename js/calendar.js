@@ -1,16 +1,18 @@
 // Apps Script calendar bridge: fetch, normalize, localize, and build the "your day" view.
 import { toLocal, datePart, addDays } from './time.js';
 import { normalizeParks, normalizeTripDrive } from './parks.js';
+import { normalizeBriefing, normalizeBirthdays } from './briefing.js';
 
 /**
  * `from` ({lat, lon}) is today's primary location; the v2 bridge uses it for leave-by drive times.
  * A v1 bridge ignores it (and answers without `version`).
  * `trip` ({lat, lon, date}) is a trip departing within 2 days; the v3 bridge answers with the drive there (`tripDrive`).
+ * The bridge needs `from` as the drive's origin, so `trip` is only ever sent together with `from`.
  */
 export async function fetchCalendar(url, secret, days = 14, { from = null, trip = null } = {}) {
   if (!url) throw { kind: 'network', status: 0, message: 'no url' };
   const fromQ = from && Number.isFinite(from.lat) && Number.isFinite(from.lon) ? `&from=${from.lat.toFixed(4)},${from.lon.toFixed(4)}` : '';
-  const tripQ = trip && Number.isFinite(trip.lat) && Number.isFinite(trip.lon) && /^\d{4}-\d{2}-\d{2}$/.test(trip.date || '')
+  const tripQ = fromQ && trip && Number.isFinite(trip.lat) && Number.isFinite(trip.lon) && /^\d{4}-\d{2}-\d{2}$/.test(trip.date || '')
     ? `&trip=${trip.lat.toFixed(4)},${trip.lon.toFixed(4)}&tripDate=${trip.date}` : '';
   const full = `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(secret)}&days=${days}${fromQ}${tripQ}`;
   const ctl = new AbortController();
@@ -36,16 +38,18 @@ const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null
 /** The v2/v3 extras. A response without `version` is a v1 bridge: no inbox, no oura, no leave-by. v3 adds parks and the trip drive. */
 export function normalizeBridge(j) {
   const version = Number(j && j.version) >= 2 ? Number(j.version) : 1;
-  if (version < 2) return { version: 1, features: { gmail: false, leaveBy: false, oura: false }, inbox: null, oura: null, parks: null, tripDrive: null };
+  if (version < 2) return { version: 1, features: { gmail: false, leaveBy: false, oura: false }, inbox: null, oura: null, parks: null, tripDrive: null, briefing: null, birthdays: null };
   const f = (j.features && typeof j.features === 'object') ? j.features : {};
   const v3 = version >= 3;
   return {
     version,
-    features: { gmail: !!f.gmail, leaveBy: !!f.leaveBy, oura: !!f.oura, ...(v3 ? { parks: !!f.parks, tripDrive: !!f.tripDrive } : {}) },
+    features: { gmail: !!f.gmail, leaveBy: !!f.leaveBy, oura: !!f.oura, ...(v3 ? { parks: !!f.parks, tripDrive: !!f.tripDrive, briefing: !!f.briefing, birthdays: !!f.birthdays } : {}) },
     inbox: normalizeInbox(j.inbox),
     oura: normalizeOura(j.oura),
     parks: v3 ? normalizeParks(j.parks) : null,
     tripDrive: v3 ? normalizeTripDrive(j.tripDrive) : null,
+    briefing: v3 ? normalizeBriefing(j.briefing) : null,
+    birthdays: v3 ? normalizeBirthdays(j.birthdays) : null,
   };
 }
 

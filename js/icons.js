@@ -58,6 +58,14 @@ const P = {
   ring: '<circle cx="12" cy="14.2" r="6.2"/><circle cx="12" cy="14.2" r="3.7"/><path d="M9.7 6.4L12 3.4l2.3 3"/>',
   suitcase: '<rect x="4" y="7.5" width="16" height="12" rx="2"/><path d="M9 7.5V5.6A1.6 1.6 0 0 1 10.6 4h2.8A1.6 1.6 0 0 1 15 5.6v1.9M8 7.5v12M16 7.5v12"/>',
   ferris: '<circle cx="12" cy="10" r="6.2"/><path d="M12 3.8v12.4M5.8 10h12.4M7.6 5.6l8.8 8.8M16.4 5.6l-8.8 8.8M8.6 21L12 10l3.4 11M7 21h10"/>',
+  gift: '<rect x="4" y="9" width="16" height="4" rx="1"/><path d="M5.5 13v6.5h13V13M12 9v10.5M12 9c-1.6-3.6-5.6-3.6-5.2-1.2.3 1.4 3 1.2 5.2 1.2zM12 9c1.6-3.6 5.6-3.6 5.2-1.2-.3 1.4-3 1.2-5.2 1.2z"/>',
+  speaker: '<path d="M4.5 9.5h3l4.5-4v13l-4.5-4h-3z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4"/>',
+  stop: '<rect x="7" y="7" width="10" height="10" rx="2"/>',
+  fork: '<path d="M7 3.5v6.2a2 2 0 0 0 4 0V3.5M9 3.5v17M16.5 20.5V3.5c-2 1.2-3 3.6-3 6.5 0 2 .9 3 3 3"/>',
+  dumbbell: '<path d="M6.5 7.5v9M9 9v6M3.5 10v4M17.5 7.5v9M15 9v6M20.5 10v4M9 12h6"/>',
+  bolt: '<path d="M13 3.5L6 13.5h5l-1 7 7-10h-5z"/>',
+  drop: '<path d="M12 3.8s6 6.4 6 10.6a6 6 0 0 1-12 0C6 10.2 12 3.8 12 3.8z"/>',
+  bin: '<path d="M5 7.5h14M9.5 7.5V5.2h5v2.3M6.6 7.5l.9 12.5h9l.9-12.5M10.2 11v5.5M13.8 11v5.5"/>',
 };
 
 export function icon(name, { size = 24, className = '', title = '' } = {}) {

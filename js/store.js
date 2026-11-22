@@ -27,11 +27,23 @@ export const DEFAULT_SETTINGS = {
   units: 'imperial',
   theme: 'auto',
   calendar: { url: '', secret: '' },
-  show: { inbox: true, leaveBy: true, oura: true, tripPrep: true, parks: true }, // app-side switches for the extras
+  // app-side switches for the extras
+  show: {
+    inbox: true, leaveBy: true, oura: true, tripPrep: true, parks: true,
+    rundown: true, birthdays: true, speak: true, dinner: true, workout: true, kidTips: true, radar: true, dust: true,
+  },
+  calendars: {}, // per calendar name: {label?, color?, show?} (see calendars.js)
   evening: { enabled: true, start: '18:00' }, // after `start`, the hero shows tomorrow's edition
   // manual: a trip typed in settings ({city, region, lat, lon, departDate, returnDate}); works without the Google bridge.
   // checklist: the "before you go" list in trip prep (empty = the defaults in tripprep.js).
   trip: { manual: null, checklist: null },
+  // phoenix home pack (both off by default): power peak windows, watering days
+  phoenix: {
+    power: { enabled: false, windows: [{ days: [1, 2, 3, 4, 5], start: '16:00', end: '19:00' }], months: [5, 6, 7, 8, 9, 10], mode: 'months', hotAt: 90 },
+    watering: { enabled: false, days: [] },
+  },
+  chores: [], // [{id, name, kind: 'bin'|'task', rule: {type:'weekly', day} | {type:'weeks', n, start} | {type:'days', n}, holiday, last, start}]
+  workout: { workCalendars: null, window: 'any' }, // workCalendars null = auto (names with "work", company emails)
   ai: { enabled: false, key: '', model: 'claude-opus-5-5' },
 };
 
@@ -54,6 +66,13 @@ export function loadSettings() {
     ai: { ...DEFAULT_SETTINGS.ai, ...(saved.ai || {}) },
     evening: { ...DEFAULT_SETTINGS.evening, ...(saved.evening || {}) },
     trip: { ...DEFAULT_SETTINGS.trip, ...(saved.trip || {}) },
+    calendars: saved.calendars && typeof saved.calendars === 'object' ? saved.calendars : {},
+    phoenix: {
+      power: { ...DEFAULT_SETTINGS.phoenix.power, ...((saved.phoenix && saved.phoenix.power) || {}) },
+      watering: { ...DEFAULT_SETTINGS.phoenix.watering, ...((saved.phoenix && saved.phoenix.watering) || {}) },
+    },
+    chores: Array.isArray(saved.chores) ? saved.chores : [],
+    workout: { ...DEFAULT_SETTINGS.workout, ...(saved.workout || {}) },
   };
   if (!s.calendar.secret) {
     s.calendar.secret = makeSecret();

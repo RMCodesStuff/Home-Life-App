@@ -6,6 +6,9 @@ import {
 import { dayByDate, hoursBetween, nightLow } from './weather.js';
 import { modelForDate } from './insights.js';
 import { yourDay } from './calendar.js';
+import { workoutTitle, workoutDetail, windowLine } from './workout.js';
+import { osmTile, radarTile } from './phoenix.js';
+import { LINKS } from './connections.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 /** Escape, then turn *one phrase* into <em>. */
@@ -65,6 +68,15 @@ export function lastNightHTML(view) {
 }
 
 // ---------- hero ----------
+const chipHTML = (c) => `<li class="chip${c.accent ? ' chip-accent' : ''}">${icon(c.icon || 'calendar', { size: 16 })}<b>${esc(c.label)}</b><span>${esc(c.text)}</span></li>`;
+/** Footer buttons: read it to me (when the browser can) and refresh. */
+function footButtons(view) {
+  const speak = view.canSpeak && view.settings.show.speak !== false
+    ? `<button class="icon-btn speak${view.speaking ? ' on' : ''}" type="button" data-action="speak" aria-pressed="${view.speaking ? 'true' : 'false'}" aria-label="${view.speaking ? 'stop reading' : 'read it to me'}">${icon(view.speaking ? 'stop' : 'speaker', { size: 18 })}</button>` : '';
+  return `<span class="foot-btns">${speak}<button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button></span>`;
+}
+const rundownFoot = (view) => (view.home && view.home.rundown && view.home.rundown.clock ? [`rundown by claude ${esc(view.home.rundown.clock)}`] : []);
+
 export function heroHTML(view) {
   const { status } = view;
   if (status === 'onboarding') {
@@ -119,7 +131,9 @@ export function heroHTML(view) {
   const footParts = [];
   footParts.push(view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`);
   footParts.push(view.writtenBy === 'claude' ? 'written by claude' : 'written on-device');
+  footParts.push(...rundownFoot(view));
   if (view.aiNote) footParts.push(`<span class="warn">${esc(view.aiNote)}</span>`);
+  const extra = view.home ? view.home.chipsToday : [];
 
   return `
     <div class="eyebrow">
@@ -142,13 +156,44 @@ export function heroHTML(view) {
       <li class="chip">${icon('umbrella', { size: 16 })}<b>umbrella</b><span>${esc(w.umbrella)}</span></li>
       <li class="chip">${icon('shirt', { size: 16 })}<b>wear</b><span>${esc(w.wear)}</span></li>
       ${w.leave_chip ? `<li class="chip">${icon('car', { size: 16 })}<b>leave</b><span>${esc(w.leave_chip.replace(/^leave\s+/, ''))}</span></li>` : ''}
+      ${extra.filter((c) => c.after === 'leave').map(chipHTML).join('')}
       <li class="chip chip-accent">${icon('sunwindow', { size: 16 })}<b>best window</b><span>${esc(w.best_window)}</span></li>
       ${w.inbox_chip ? `<li class="chip">${icon('inbox', { size: 16 })}<b>inbox</b><span>${esc(w.inbox_chip)}</span></li>` : ''}
+      ${extra.filter((c) => c.after !== 'leave').map(chipHTML).join('')}
     </ul>
     <div class="hero-foot">
       <span>${footParts.join(' · ')}</span>
-      <button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button>
+      ${footButtons(view)}
     </div>`;
+}
+
+// ---------- the rundown (the daily claude run) ----------
+export function rundownHTML(view) {
+  const r0 = view.home && view.home.rundown;
+  if (!r0) return '';
+  const rows = (list) => (list.length ? `<ul class="rd-rows">${list.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : '');
+  const m = r0.money;
+  const b = m && m.budget;
+  const money = m ? `<div class="rd-sec"><h3 class="rd-h">Money</h3>
+      ${m.line ? `<p class="rd-line">${esc(m.line)}</p>` : ''}
+      ${m.bills.length ? `<p class="rd-label">bills due</p>${rows(m.bills.map((x) => x.text))}` : ''}
+      ${b ? `<div class="rd-budget" role="img" aria-label="${esc(`${b.spentPct}% of the budget spent, ${b.status}`)}">
+        <div class="rd-bar"><span class="rd-fill${b.status === 'over budget' ? ' over' : ''}" style="width:${(b.fill * 100).toFixed(1)}%"></span>${b.marker != null ? `<span class="rd-mark" style="left:${(b.marker * 100).toFixed(1)}%"></span>` : ''}</div>
+        <p class="rd-bud">${esc(b.text)} · <span class="${b.status === 'on pace' || b.status === 'under pace' ? '' : 'warn'}">${esc(b.status)}</span></p></div>` : ''}
+      ${m.over.length ? `<p class="rd-label">over budget</p>${rows(m.over)}` : ''}
+      ${m.notable.length ? `<p class="rd-label">notable</p>${rows(m.notable)}` : ''}
+    </div>` : '';
+  const f = r0.fantasy;
+  const fantasy = f ? `<div class="rd-sec"><h3 class="rd-h">Fantasy</h3>
+      ${f.line ? `<p class="rd-line">${esc(f.line)}</p>` : ''}${rows([...f.alerts, ...f.swaps, ...f.waivers])}</div>` : '';
+  const pl = r0.playlist;
+  const playlist = pl ? `<div class="rd-sec"><h3 class="rd-h">Playlist</h3>
+      <p class="rd-pl">${esc(pl.name)}</p>${pl.why ? `<p class="rd-line">${esc(pl.why)}</p>` : ''}
+      ${pl.url ? `<a class="btn btn-accent rd-btn" href="${esc(pl.url)}" target="_blank" rel="noopener">${icon('speaker', { size: 16 })} open in spotify</a>` : ''}</div>` : '';
+  return `<div class="card-head"><h2>The rundown</h2><p class="sub">${esc(r0.sub)}</p></div>
+    <hr class="rule">
+    ${r0.note ? `<p class="rd-note">${esc(r0.note)}</p>` : ''}
+    ${money}${fantasy}${playlist}`;
 }
 
 // ---------- tomorrow's edition (evening mode) ----------
@@ -163,8 +208,8 @@ export function tomorrowHeroHTML(view) {
     view.travelLineTarget ? `<p class="travel">${esc(view.travelLineTarget)}</p>` : '',
     `<p class="travel"><button class="text-btn" type="button" data-action="show-today">now ${r(m.current.temp)}° · show today</button></p>`,
   ].join('');
-  const chips = t.chips.map((c) => `<li class="chip">${icon(TOMORROW_ICONS[c.key] || 'calendar', { size: 16 })}<b>${esc(c.label)}</b><span>${esc(c.text)}</span></li>`).join('');
-  const foot = [view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`, 'written on-device'];
+  const chips = [...t.chips.map((c) => ({ ...c, icon: TOMORROW_ICONS[c.key] })), ...(view.home ? view.home.chipsTomorrow : [])].map(chipHTML).join('');
+  const foot = [view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`, 'written on-device', ...rundownFoot(view)];
   return `
     <div class="eyebrow">
       <span class="eb-icon">${icon('moon', { size: 16 })}</span>
@@ -183,7 +228,7 @@ export function tomorrowHeroHTML(view) {
     <ul class="chips${fade}">${chips}</ul>
     <div class="hero-foot">
       <span>${foot.join(' · ')}</span>
-      <button class="icon-btn refresh${view.loading ? ' spinning' : ''}" type="button" data-action="refresh" aria-label="refresh">${icon('refresh', { size: 18 })}</button>
+      ${footButtons(view)}
     </div>`;
 }
 
@@ -302,8 +347,43 @@ export function hourlyHTML(view) {
       </div>
     </div>
     <p class="foot-note">blue figures are the chance of rain each hour. scroll for more.</p>
+    ${radarHTML(view)}
     <div class="yourday">${yourDayHTML(view)}</div>
+    ${workoutHTML(view)}
     ${waiting ? `<div class="waiting">${waiting}</div>` : ''}`;
+}
+
+// ---------- radar strip ----------
+export function radarHTML(view) {
+  const rd = view.radar;
+  if (!rd || !rd.grid || !rd.frame) return '';
+  const { z, tiles, fx, fy } = rd.grid;
+  const cell = (t) => `<img class="rt" alt="" loading="lazy" decoding="async" referrerpolicy="strict-origin-when-cross-origin" style="grid-column:${t.col + 1};grid-row:${t.row + 1}" src="${esc(osmTile(t, z))}">`
+    + `<img class="rr" alt="" loading="lazy" decoding="async" style="grid-column:${t.col + 1};grid-row:${t.row + 1}" src="${esc(radarTile(rd.frame, t, z))}">`;
+  return `<div class="radar" role="img" aria-label="rain radar around ${esc(view.ctx.model.place.name.toLowerCase())}">
+      <div class="radar-frame"><div class="radar-grid">${tiles.map(cell).join('')}<span class="radar-dot" style="left:${(((1 + fx) / 3) * 100).toFixed(2)}%;top:${(((1 + fy) / 3) * 100).toFixed(2)}%"></span></div></div>
+      <p class="radar-credit">radar${rd.ago ? ` ${esc(rd.ago)}` : ''} · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> · <a href="https://www.rainviewer.com/" target="_blank" rel="noopener">weather data by RainViewer</a></p>
+    </div>`;
+}
+
+// ---------- today's workout (rack timer) ----------
+export function workoutHTML(view) {
+  const p = view.home && view.home.workout;
+  if (!p) return '';
+  const ahead = view.target && view.target !== datePart(view.ctx.now);
+  const title = workoutTitle(p);
+  const detail = workoutDetail(p);
+  const win = windowLine(p);
+  const button = p.state === 'propose' || p.state === 'resume'
+    ? `<a class="btn btn-accent wo-btn" href="${esc(p.link)}">${icon('dumbbell', { size: 16 })} ${p.state === 'resume' ? 'resume in rack timer' : 'start in rack timer'}</a>` : '';
+  return `<div class="workout">
+    <div class="sec-head"><h2>${ahead ? "Tomorrow's workout" : "Today's workout"}</h2><span class="sub-right">${view.home.workoutSource ? esc(view.home.workoutSource) : 'rack timer'}</span></div>
+    ${title && p.state !== 'done' && p.state !== 'rest' ? `<p class="wo-title">${esc(title)}</p>` : ''}
+    ${detail ? `<p class="wo-line wo-detail">${detail.split(' · ').map((x) => `<span class="nw">${esc(x)}</span>`).join(' · ')}</p>` : ''}
+    ${win ? `<p class="wo-line">${icon('sunwindow', { size: 16 })}<span>${esc(win)}</span></p>` : ''}
+    ${p.why.length ? `<p class="wo-why">${esc(p.why.join(' · '))}</p>` : ''}
+    ${button}
+  </div>`;
 }
 
 // ---------- your day ----------
@@ -317,27 +397,53 @@ function eventRow(view, ev, isNext, notes, extra) {
   const h = m.hours.find((x) => x.time === hourKey(ev.ls));
   const note = notes.get(ev.id);
   const leave = extra.leaves.get(ev.id);
+  const tag = view.tags ? view.tags.get(ev.calendar) : null;
   const loc = /^https?:|zoom\.us|meet\.google|teams\.microsoft|webex/i.test(ev.location) ? '' : firstSegment(ev.location);
   return `<li class="ev${isNext ? ' next' : ''}${ongoing ? ' now' : ''}">
     <div class="ev-time"><span class="t">${ongoing ? 'now' : esc(fmtClock(ev.ls))}</span><span class="d">${esc(dowShort(ev.date))}</span></div>
     <span class="ev-dot" aria-hidden="true"></span>
-    <div class="ev-body"><p class="ev-title">${esc(ev.title)}</p>${loc ? `<p class="ev-loc">${esc(loc)}</p>` : ''}
+    <div class="ev-body"><p class="ev-title">${esc(ev.title)}${tag ? ` <span class="ev-tag c-${esc(tag.color)}"><i aria-hidden="true"></i>${esc(tag.label)}</span>` : ''}</p>${loc ? `<p class="ev-loc">${esc(loc)}</p>` : ''}
     ${note ? `<p class="ev-wx${view.fade ? ' fade-in' : ''}">${h ? weatherIcon(h.code, h.isDay, { size: 16 }) : ''}<span>${esc(note)}</span></p>` : ''}
     ${leave ? `<p class="ev-leave${extra.nextLeaveId === ev.id ? ' soon' : ''}">${icon('car', { size: 16 })}<span>${esc(leave)}</span></p>` : ''}</div>
   </li>`;
 }
 
+/** Dinner from the meal plan, at the end of Your day. */
+export function dinnerHTML(view) {
+  const d = view.home && view.home.dinner;
+  if (!d) return '';
+  const m = d.meals;
+  const more = [m.breakfast ? `breakfast · ${m.breakfast.name.toLowerCase()}` : '', m.lunch ? `lunch · ${m.lunch.name.toLowerCase()}` : ''].filter(Boolean).join('  ·  ');
+  return `<div class="dinner">
+    <p class="tp-line dn-main">${icon('fork', { size: 16 })}<span><b>dinner</b> · ${esc(m.dinner ? m.dinner.name.toLowerCase() : 'nothing planned yet')}</span></p>
+    ${more ? `<p class="dn-more">${esc(more)}</p>` : ''}
+    ${d.eatBy ? `<p class="dn-more dn-eat">${esc(d.eatBy)}</p>` : ''}
+    <a class="text-btn dn-link" href="${esc(LINKS.mealPlan)}" target="_blank" rel="noopener">open meal plan</a>
+  </div>`;
+}
+/** Lines at the top of Your day: birthdays, then kid-friendly heat tips. */
+function dayTopHTML(view) {
+  const h = view.home;
+  if (!h) return '';
+  return [
+    ...h.birthdays.map((t) => `<p class="tp-line yd-line">${icon('gift', { size: 16 })}<span>${esc(t)}</span></p>`),
+    ...h.kidTips.map((t) => `<p class="tp-line yd-line">${icon('sun', { size: 16 })}<span>${esc(t)}</span></p>`),
+  ].join('');
+}
+
 export function yourDayHTML(view) {
   const head = (right) => `<div class="sec-head"><h2>Your day</h2>${right}</div>`;
+  const top = dayTopHTML(view);
+  const dinner = dinnerHTML(view);
   if (!view.calendarConnected) {
-    return `${head('<button class="text-btn" type="button" data-action="open-settings-calendar">connect calendar</button>')}
+    return `${head('<button class="text-btn" type="button" data-action="open-settings-calendar">connect calendar</button>')}${top}
       <div class="day-empty"><p>connect your google calendar and each event shows up here with the weather at that hour. it also spots trips, so the week uses the forecast where you'll be.</p>
-      <button class="btn" type="button" data-action="open-settings-calendar">${icon('calendar', { size: 16 })} connect calendar</button></div>`;
+      <button class="btn" type="button" data-action="open-settings-calendar">${icon('calendar', { size: 16 })} connect calendar</button></div>${dinner}`;
   }
   const errNote = view.calErrorText ? `<p class="cal-note">${esc(view.calErrorText)}${view.calFetchedAt ? ` · showing ${esc(clockAt(view.calFetchedAt, view.ctx.model.offset))}` : ''}</p>` : '';
   if (!view.hasCalendarData) {
-    return `${head('<span class="sub-right">calendar</span>')}<div class="day-empty"><p>${esc(view.calErrorText || 'checking your calendar…')}</p>
-      ${view.calErrorText ? `<button class="btn" type="button" data-action="open-settings-calendar">${icon('gear', { size: 16 })} calendar settings</button>` : ''}</div>`;
+    return `${head('<span class="sub-right">calendar</span>')}${top}<div class="day-empty"><p>${esc(view.calErrorText || 'checking your calendar…')}</p>
+      ${view.calErrorText ? `<button class="btn" type="button" data-action="open-settings-calendar">${icon('gear', { size: 16 })} calendar settings</button>` : ''}</div>${dinner}`;
   }
   const ahead = view.target && view.target !== datePart(view.ctx.now);
   const v = yourDay(view.ctx.events, view.ctx.now, { date: ahead ? view.target : null });
@@ -355,13 +461,13 @@ export function yourDayHTML(view) {
     ? `<p class="earlier">${[v.earlier ? `${v.earlier} earlier today` : '', !v.upcoming.length && v.tomorrow.length ? 'nothing else today' : ''].filter(Boolean).join(' · ')}</p>` : '';
   let list = v.upcoming.map((e) => eventRow(view, e, v.next && e.id === v.next.id, notes, extra)).join('');
   if (!v.upcoming.length && !v.tomorrow.length) {
-    return `${head(rightLabel)}${chips}${conflicts}${earlier}
-      <p class="day-empty">${ahead ? 'nothing on the calendar tomorrow.' : v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}${stale}`;
+    return `${head(rightLabel)}${top}${chips}${conflicts}${earlier}
+      <p class="day-empty">${ahead ? 'nothing on the calendar tomorrow.' : v.earlier ? 'nothing else on the calendar today.' : 'nothing on the calendar today.'}</p>${errNote}${stale}${dinner}`;
   }
   if (v.tomorrow.length) {
     list += `<li class="ev-label">tomorrow</li>${v.tomorrow.slice(0, 4).map((e, i) => eventRow(view, e, !v.upcoming.length && i === 0, notes, extra)).join('')}`;
   }
-  return `${head(rightLabel)}${chips}${conflicts}${earlier}<ol class="timeline">${list}</ol>${errNote}${stale}`;
+  return `${head(rightLabel)}${top}${chips}${conflicts}${earlier}<ol class="timeline">${list}</ol>${errNote}${stale}${dinner}`;
 }
 
 // ---------- waiting on you (gmail) ----------
@@ -479,6 +585,8 @@ export function renderAll(view, els) {
   els.hero.innerHTML = heroHTML(view);
   const ready = view.status === 'ready';
   for (const k of ['hourly', 'week', 'fine']) els[k].hidden = !ready;
+  const rundown = ready ? rundownHTML(view) : '';
+  if (els.rundown) { els.rundown.hidden = !rundown; if (rundown) els.rundown.innerHTML = rundown; }
   if (!ready) return;
   els.hourly.innerHTML = hourlyHTML(view);
   els.week.innerHTML = weekHTML(view);

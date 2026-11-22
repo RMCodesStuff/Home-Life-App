@@ -11,6 +11,8 @@ const PRECACHE = [
   './js/calendar.js', './js/travel.js', './js/insights.js', './js/ai.js',
   './js/icons.js', './js/render.js', './js/settings.js',
   './js/parks.js', './js/tripprep.js', './js/evening.js', './js/compose.js',
+  './js/briefing.js', './js/calendars.js', './js/phoenix.js', './js/meals.js', './js/workout.js', './js/speech.js',
+  './js/connections.js', './js/fb.js', './js/settings2.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
   './icons/favicon.svg', './calendar-bridge/Code.gs', './calendar-bridge/appsscript.json'
 ];

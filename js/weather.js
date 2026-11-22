@@ -2,7 +2,7 @@
 
 const CURRENT = 'temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,is_day,precipitation';
 const HOURLY = 'temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,precipitation,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,is_day';
-const DAILY = 'weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,precipitation_sum,sunrise,sunset,daylight_duration,uv_index_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant';
+const DAILY = 'weather_code,temperature_2m_max,temperature_2m_min,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,precipitation_sum,sunrise,sunset,daylight_duration,uv_index_max,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,et0_fao_evapotranspiration';
 
 export function forecastUrl(lat, lon, units = 'imperial') {
   const imp = units === 'imperial';
@@ -27,8 +27,8 @@ async function getJson(url, opts = {}, timeoutMs = 15000) {
 export const fetchRawForecast = (lat, lon, units) => getJson(forecastUrl(lat, lon, units));
 
 export async function fetchAirQuality(lat, lon) {
-  const j = await getJson(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,pm2_5&timezone=auto`);
-  return j && j.current ? { us_aqi: j.current.us_aqi ?? null, pm2_5: j.current.pm2_5 ?? null } : null;
+  const j = await getJson(`https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=us_aqi,pm2_5,pm10,dust&timezone=auto`);
+  return j && j.current ? { us_aqi: j.current.us_aqi ?? null, pm2_5: j.current.pm2_5 ?? null, pm10: j.current.pm10 ?? null, dust: j.current.dust ?? null } : null;
 }
 
 export async function fetchAlerts(lat, lon, countryCode) {
@@ -87,7 +87,7 @@ export function normalize(raw, place = {}, units = 'imperial', extras = {}) {
     precipProbMax: col(d, 'precipitation_probability_max', i), precipSum: col(d, 'precipitation_sum', i),
     sunrise: col(d, 'sunrise', i), sunset: col(d, 'sunset', i), daylight: col(d, 'daylight_duration', i),
     uvMax: col(d, 'uv_index_max', i), windMax: col(d, 'wind_speed_10m_max', i), gustMax: col(d, 'wind_gusts_10m_max', i),
-    windDir: col(d, 'wind_direction_10m_dominant', i),
+    windDir: col(d, 'wind_direction_10m_dominant', i), et0: col(d, 'et0_fao_evapotranspiration', i),
   }));
   const aq = extras.aq || null;
   return {
@@ -104,7 +104,7 @@ export function normalize(raw, place = {}, units = 'imperial', extras = {}) {
       windDir: c.wind_direction_10m ?? null, gust: c.wind_gusts_10m ?? null, isDay: c.is_day ?? null,
     },
     hours, days,
-    aqi: aq && aq.us_aqi != null ? { value: Math.round(aq.us_aqi), pm25: aq.pm2_5 ?? null, category: aqiCategory(aq.us_aqi) } : null,
+    aqi: aq && aq.us_aqi != null ? { value: Math.round(aq.us_aqi), pm25: aq.pm2_5 ?? null, pm10: aq.pm10 ?? null, dust: aq.dust ?? null, category: aqiCategory(aq.us_aqi) } : null,
     alerts: extras.alerts || [],
   };
 }

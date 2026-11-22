@@ -62,7 +62,11 @@ export function packingList({ model = null, trip, parkDates = [], units = 'imper
 }
 
 const normKey = (s) => ` ${String(s).toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\b(a|an|the|some|your)\b/g, ' ').replace(/\s+/g, ' ').trim()} `;
-/** On-device items first, then extra ones (e.g. the morning rundown's), lowercased, without repeats or near-repeats. */
+const lead3 = (k) => { const w = k.trim().split(' '); return w.length >= 3 ? w.slice(0, 3).join(' ') : ''; };
+/**
+ * On-device items first, then extra ones (e.g. the morning rundown's), lowercased, without repeats or near-repeats
+ * (one contains the other, or both start with the same three words: "a warm layer for nights in the low 50s" and "…high 40s").
+ */
 export function mergePacking(auto, extra) {
   const out = [];
   const keys = [];
@@ -70,7 +74,7 @@ export function mergePacking(auto, extra) {
     if (typeof item !== 'string') continue;
     const s = item.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 90);
     const k = normKey(s);
-    if (!k.trim() || keys.some((x) => x.includes(k) || k.includes(x))) continue;
+    if (!k.trim() || keys.some((x) => x.includes(k) || k.includes(x) || (lead3(x) && lead3(x) === lead3(k)))) continue;
     keys.push(k);
     out.push(s);
   }

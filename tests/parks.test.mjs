@@ -116,7 +116,7 @@ test('modelForPark prefers a forecast in the park time zone', () => {
 test('normalizeBridge: v3 adds parks and the trip drive; v2 has neither', () => {
   const v3 = normalizeBridge({ ok: true, version: 3, features: { gmail: true, leaveBy: true, oura: false, parks: true, tripDrive: true }, parks: PARKS, tripDrive: { ok: true, minutes: 342, miles: 372.4, summary: 'I-10 W' } });
   assert.equal(v3.version, 3);
-  assert.deepEqual(v3.features, { gmail: true, leaveBy: true, oura: false, parks: true, tripDrive: true });
+  assert.deepEqual(v3.features, { gmail: true, leaveBy: true, oura: false, parks: true, tripDrive: true, briefing: false, birthdays: false });
   assert.equal(v3.parks.days.length, 2);
   assert.equal(v3.tripDrive.minutes, 342);
   const absent = normalizeBridge({ ok: true, version: 3, features: {} });
@@ -142,5 +142,7 @@ test('fetchCalendar sends trip and tripDate only for a valid trip', async () => 
     assert.ok(!urls[1].includes('trip='), 'bad date: no trip param');
     await fetchCalendar('https://script.google.com/macros/s/FAKE/exec', 'k', 14, { trip: null });
     assert.ok(!urls[2].includes('trip='));
+    await fetchCalendar('https://script.google.com/macros/s/FAKE/exec', 'k', 14, { trip: { lat: 33.8, lon: -117.9, date: '2026-11-22' } });
+    assert.ok(!urls[3].includes('trip='), 'never trip without from (the bridge answers no_origin)');
   } finally { delete globalThis.fetch; }
 });

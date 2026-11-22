@@ -95,6 +95,8 @@ test('mergePacking keeps on-device items first and drops repeats and near-repeat
   const out = mergePacking(['a warm layer for nights in the low 50s', 'sunscreen and hats'], ['A warm layer for nights in the low 50s.', 'sunscreen', 'Ear plugs for the hotel', 42, null, '  ']);
   assert.deepEqual(out, ['a warm layer for nights in the low 50s', 'sunscreen and hats', 'ear plugs for the hotel']);
   assert.deepEqual(mergePacking(['shorts'], ['short socks']), ['shorts', 'short socks'], 'word boundaries, not substrings');
+  assert.deepEqual(mergePacking(['a warm layer for nights in the high 40s'], ['a warm layer for nights in the low 50s', 'a portable fan']), ['a warm layer for nights in the high 40s', 'a portable fan'], 'same first three words: one is enough');
+  assert.deepEqual(mergePacking(['a portable charger'], ['a portable fan']), ['a portable charger', 'a portable fan'], 'short items are compared whole');
   assert.deepEqual(mergePacking([], undefined), []);
   assert.equal(mergePacking(Array.from({ length: 20 }, (_, i) => `item ${i}`)).length, 12);
 });
