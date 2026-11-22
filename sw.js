@@ -1,6 +1,7 @@
 /* Home Life service worker. Same-origin: stale-while-revalidate. Fonts and the
-   Anthropic SDK: cache-first. Everything else goes straight to the network. */
-const VERSION = 'home-life-v2';
+   Anthropic SDK: cache-first. Everything else goes straight to the network, and the
+   Firebase SDK (www.gstatic.com), OpenStreetMap and RainViewer are never intercepted. */
+const VERSION = 'home-life-v3';
 const CORE = VERSION + '-core';
 const RUNTIME = VERSION + '-runtime';
 
@@ -9,9 +10,14 @@ const PRECACHE = [
   './js/store.js', './js/time.js', './js/weather.js', './js/geo.js',
   './js/calendar.js', './js/travel.js', './js/insights.js', './js/ai.js',
   './js/icons.js', './js/render.js', './js/settings.js',
+  './js/parks.js', './js/tripprep.js', './js/evening.js', './js/compose.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
   './icons/favicon.svg', './calendar-bridge/Code.gs', './calendar-bridge/appsscript.json'
 ];
+
+// Hosts the worker must leave alone (live data and SDK modules with their own caching).
+const PASS_THROUGH = /(^|\.)(gstatic\.com|openstreetmap\.org|rainviewer\.com)$/;
+const FONT_HOST = 'fonts.gstatic.com';
 
 const CACHE_FIRST_PREFIXES = [
   'https://fonts.googleapis.com/',
@@ -84,6 +90,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(staleWhileRevalidate(request, event));
     return;
   }
+  if (url.hostname !== FONT_HOST && PASS_THROUGH.test(url.hostname)) return;
   if (CACHE_FIRST_PREFIXES.some((p) => request.url.startsWith(p))) {
     event.respondWith(cacheFirst(request));
   }
