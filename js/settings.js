@@ -11,6 +11,7 @@ import { planSettingsMarkup, wirePlanSettings } from './planui.js';
 import { isValidKey, extractKeyFromUrl } from './devicesetup.js';
 import { MODELS } from './ai.js';
 import { esc, clockAt } from './render.js';
+import { loadPlan } from './plan.js';
 
 // ---------- city picker ----------
 export function mountCityPicker(root, { prefix, onPick, locate: withLocate = true, placeholder = 'search for a city, like springfield, il' }) {
@@ -72,6 +73,8 @@ let dialog = null;
 let scriptText = null;
 let manifestText = null;
 let installEvent = null;
+let calSetupOpen = null; // null = follow the default (open until connected)
+let openSecs = null; // Set of open section ids; null until the first build decides the default
 
 const STEPS = `
   <li>Open <a href="https://script.google.com" target="_blank" rel="noopener">script.google.com</a> and create a new project.</li>
@@ -80,7 +83,7 @@ const STEPS = `
   <li>Back in the editor, open <b>appsscript.json</b> and paste over it (<b>copy manifest</b> below).</li>
   <li>Click <b>Deploy → New deployment</b>, choose <b>Web app</b>, set <b>Execute as: Me</b> and <b>Who has access: Anyone</b>, then <b>Deploy</b>.</li>
   <li>Approve the Google permission prompt (read-only calendar, gmail, drive and contacts).</li>
-  <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it below, then tap <b>test connection</b>.</li>
+  <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it in <b>web app url</b> above, then tap <b>test connection</b>.</li>
   <li>Already set up on another device? Use <b>Other devices → copy setup link</b> there.</li>`;
 
 const UPDATE_STEPS = `
@@ -114,15 +117,6 @@ function markup(s) {
       <p class="status" id="cal-status">not connected</p>
       <p class="note tight" id="cal-extras" hidden></p>
       <div class="notice" id="cal-update" hidden><b>your google script is out of date.</b> <span id="cal-update-what"></span><ol>${UPDATE_STEPS}</ol></div>
-      <ol class="steps" id="cal-steps">${STEPS}</ol>
-      <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button>
-        <button class="btn btn-accent" type="button" id="cal-copy-manifest">${icon('calendar', { size: 16 })} copy manifest</button></div>
-      <p class="result" id="cal-copy-result" role="status"></p>
-      <label for="cal-script" class="vh">calendar script</label>
-      <textarea id="cal-script" readonly hidden></textarea>
-      <p class="result" id="cal-manifest-result" role="status"></p>
-      <label for="cal-manifest" class="vh">script manifest</label>
-      <textarea id="cal-manifest" readonly hidden></textarea>
       <label for="cal-url">web app url</label>
       <input type="url" id="cal-url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="${esc(s.calendar.url || '')}" autocomplete="off" spellcheck="false">
       <label for="cal-key">private key</label>
@@ -133,6 +127,18 @@ function markup(s) {
       <p class="note tight" id="cal-key-note">the same key must be in your Google script. Change it here only to match a script you already deployed.</p>
       <div class="set-row"><button class="btn" type="button" id="cal-test">test connection</button></div>
       <p class="result" id="cal-test-result" role="status"></p>
+      <details class="set-details" id="cal-setup"${calSetupOpen === null ? (s.calendar.url ? '' : ' open') : (calSetupOpen ? ' open' : '')}>
+        <summary>set up or update the script</summary>
+        <ol class="steps" id="cal-steps">${STEPS}</ol>
+        <div class="set-row"><button class="btn btn-accent" type="button" id="cal-copy">${icon('calendar', { size: 16 })} copy script</button>
+          <button class="btn btn-accent" type="button" id="cal-copy-manifest">${icon('calendar', { size: 16 })} copy manifest</button></div>
+        <p class="result" id="cal-copy-result" role="status"></p>
+        <label for="cal-script" class="vh">calendar script</label>
+        <textarea id="cal-script" readonly hidden></textarea>
+        <p class="result" id="cal-manifest-result" role="status"></p>
+        <label for="cal-manifest" class="vh">script manifest</label>
+        <textarea id="cal-manifest" readonly hidden></textarea>
+      </details>
       <p class="subhead">show in the app</p>
       <label class="switch" for="show-inbox"><input type="checkbox" id="show-inbox"${s.show.inbox ? ' checked' : ''}> show waiting on you</label>
       <label class="switch" for="show-leaveby"><input type="checkbox" id="show-leaveby"${s.show.leaveBy ? ' checked' : ''}> show leave-by times</label>
@@ -205,6 +211,128 @@ function markup(s) {
       <p class="note" id="install-help">in chrome: ⋮ menu → cast, save, and share → install page as app. on android: ⋮ → add to home screen.</p>
     </section>
   </div>`;
+}
+
+
+// ---------- accordion: order + summaries (pure, unit-tested) ----------
+export const SECTION_ORDER = ['set-home', 'set-calendar', 'set-plan', 'set-trip', 'set-cals', 'set-evening', 'set-meals', 'set-workout', 'set-chores', 'set-phoenix', 'set-oura', 'set-ai', 'set-display', 'set-devices', 'set-install'];
+
+/** Section ids in display order; ids not in SECTION_ORDER keep their relative order at the end. Pure. */
+export function orderSections(ids) {
+  const rank = (id) => { const i = SECTION_ORDER.indexOf(id); return i < 0 ? SECTION_ORDER.length : i; };
+  return ids.map((id, n) => [id, n]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
+}
+
+/** "18:00" -> "6pm", "18:30" -> "6:30pm". */
+export function clockWords(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(hhmm || '');
+  if (!m) return '';
+  const h = +m[1]; const min = m[2];
+  return `${h % 12 || 12}${min === '00' ? '' : `:${min}`}${h < 12 ? 'am' : 'pm'}`;
+}
+
+/**
+ * One short lowercase line per section id, from the settings and the status the sheet already shows.
+ * A section with nothing known gets no entry (never a guess). `extra`: {plan, installed}. Pure.
+ */
+export function sectionSummaries(s, st = {}, extra = {}) {
+  const out = {};
+  const put = (id, text) => { if (text) out[id] = text; };
+  put('set-home', s.home ? placeLabel(s.home).toLowerCase() : 'not set');
+
+  const c = st.calendar || {};
+  if (!s.calendar || !s.calendar.url) put('set-calendar', 'not connected');
+  else if (c.error && !c.count) put('set-calendar', 'not working');
+  else if (st.bridge) put('set-calendar', st.bridge.version < 3 ? 'update available' : `connected · v${st.bridge.version}`);
+
+  if (extra.plan !== undefined) put('set-plan', extra.plan ? String(extra.plan.title || 'trip plan').toLowerCase() : 'no plan');
+
+  const m = s.trip && s.trip.manual;
+  if (m) put('set-trip', String(m.city || '').toLowerCase());
+  else if (Array.isArray(st.trips)) put('set-trip', st.trips.some((t) => !t.manual && t.returnDate >= (st.today || '')) ? 'from your calendar' : 'no trips');
+
+  const ev = s.evening || {};
+  put('set-evening', ev.enabled === false ? 'off' : `from ${clockWords(eveningStart(ev))}`);
+
+  if (Array.isArray(st.calendars) && st.calendars.length) put('set-cals', `${st.calendars.filter((x) => x.show).length} shown`);
+
+  if (st.meals) put('set-meals', st.meals.connected ? 'connected' : 'not connected');
+  if (st.rack) put('set-workout', st.rack.connected ? 'connected' : st.rack.updatedAt ? 'from your rack timer' : 'not connected');
+
+  const n = Array.isArray(s.chores) ? s.chores.length : 0;
+  put('set-chores', n ? `${n} chore${n === 1 ? '' : 's'}` : 'none yet');
+
+  const ph = s.phoenix;
+  if (ph) put('set-phoenix', (ph.power && ph.power.enabled) || (ph.watering && ph.watering.enabled) ? 'on' : 'off');
+
+  const o = st.oura;
+  if (!s.calendar || !s.calendar.url) put('set-oura', 'not set up');
+  else if (o && o.version >= 2 && o.data) put('set-oura', o.data.ok ? 'connected' : o.data.error === 'not_connected' ? 'not connected' : o.data.error === 'not_configured' ? 'not set up' : '');
+
+  put('set-ai', s.ai && s.ai.enabled ? 'claude' : 'on-device');
+  put('set-display', [s.theme, s.units === 'metric' ? '°C' : '°F'].filter(Boolean).join(' · '));
+  put('set-devices', 'share your setup');
+  if (extra.installed !== undefined) put('set-install', extra.installed ? 'installed' : 'add to home screen');
+  return out;
+}
+
+const CHEVRON = '<svg class="set-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+
+/** Turns every section.set-sec into a collapsible one by MOVING its children into a body (ids and listeners survive). */
+function accordionize() {
+  const inner = dialog.querySelector('.sheet-inner');
+  const secs = [...inner.querySelectorAll(':scope > section.set-sec')];
+  const byId = new Map(secs.map((x) => [x.id, x]));
+  const open = openSecs;
+  for (const id of orderSections(secs.map((x) => x.id))) inner.appendChild(byId.get(id));
+  for (const sec of secs) {
+    const h3 = sec.querySelector(':scope > h3');
+    if (!h3) continue;
+    const title = h3.textContent;
+    const body = document.createElement('div');
+    body.className = 'set-body';
+    body.id = `${sec.id}-body`;
+    while (h3.nextSibling) body.appendChild(h3.nextSibling);
+    h3.textContent = '';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'set-head';
+    btn.setAttribute('aria-controls', body.id);
+    btn.innerHTML = `<span class="set-main"><span class="set-title"></span><span class="set-sum" data-sum></span></span>${CHEVRON}`;
+    btn.querySelector('.set-title').textContent = title;
+    h3.appendChild(btn);
+    sec.appendChild(body);
+    const set = (on) => { btn.setAttribute('aria-expanded', String(on)); body.hidden = !on; sec.classList.toggle('is-open', on); };
+    set(open.has(sec.id));
+    btn.addEventListener('click', () => {
+      const on = btn.getAttribute('aria-expanded') !== 'true';
+      set(on);
+      if (on) open.add(sec.id); else open.delete(sec.id);
+    });
+  }
+}
+
+/** Expands a section (by id) and scrolls it into view. */
+function expandSection(sec) {
+  const btn = sec.querySelector('.set-head');
+  if (btn && btn.getAttribute('aria-expanded') !== 'true') btn.click();
+  sec.scrollIntoView({ block: 'start' });
+  if (btn) btn.focus({ preventScroll: true });
+}
+
+function paintSummaries() {
+  if (!dialog || !api) return;
+  const s = api.getSettings();
+  const st = api.getStatus ? api.getStatus() : {};
+  let plan; try { plan = loadPlan(); } catch { plan = undefined; }
+  const standalone = !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  const sums = sectionSummaries(s, st, { plan, installed: standalone });
+  dialog.querySelectorAll('section.set-sec').forEach((sec) => {
+    const el = sec.querySelector('[data-sum]');
+    if (!el) return;
+    el.textContent = sums[sec.id] || '';
+    el.hidden = !sums[sec.id];
+  });
 }
 
 /** Rebuilds the sheet from the current settings (after a setup link replaced them). */
@@ -362,6 +490,12 @@ function build() {
     try { await installEvent.userChoice; } catch { /* ignore */ }
     installEvent = null; refreshInstall();
   });
+  if (openSecs === null) openSecs = new Set(s.home ? [] : ['set-home']);
+  accordionize();
+  const setup = $('cal-setup');
+  setup.addEventListener('toggle', () => { calSetupOpen = setup.open; });
+  const planBody = $('plan-set-body');
+  if (planBody) new MutationObserver(paintSummaries).observe(planBody, { childList: true });
   refreshStatus();
   refreshInstall();
 }
@@ -448,6 +582,8 @@ export function refreshStatus() {
   const upd = dialog.querySelector('#cal-update');
   if (upd) {
     upd.hidden = !(s.calendar.url && st.bridge && st.bridge.version < 3);
+    const setupD = dialog.querySelector('#cal-setup');
+    if (!upd.hidden && setupD && calSetupOpen === null) setupD.open = true;
     const v = st.bridge ? st.bridge.version : 3;
     dialog.querySelector('#cal-update-what').textContent = `the new version adds ${v < 2 ? 'inbox, drive times, ' : ''}park hours and the drive time for trips. google will ask for two more read-only permissions: drive (to read the daily rundown file) and contacts (for birthdays). to update:`;
   }
@@ -466,6 +602,7 @@ export function refreshStatus() {
       : next ? `from your calendar: ${esc(next.city.toLowerCase())}, ${esc(fmtDateRange(next.departDate, next.returnDate))}` : 'no trip added here';
   }
   refreshOura(s, st);
+  paintSummaries();
 }
 
 /** Plain words for the v3 features that failed (normal states like "disabled" or "too close" say nothing). Pure. */
@@ -523,6 +660,7 @@ function refreshInstall() {
   dialog.querySelector('#set-install').hidden = !!standalone;
   dialog.querySelector('#install-btn').hidden = !installEvent;
   dialog.querySelector('#install-help').hidden = !!installEvent;
+  paintSummaries();
 }
 export function setInstallPrompt(e) { installEvent = e; refreshInstall(); }
 
@@ -534,9 +672,5 @@ export function openSettings(section) {
   loadManifest().catch(() => {});
   if (!dialog.open) dialog.showModal();
   const target = section && dialog.querySelector(`#set-${section}`);
-  if (target) {
-    target.scrollIntoView({ block: 'start' });
-    const first = target.querySelector('input, button, select');
-    if (first) first.focus({ preventScroll: true });
-  }
+  if (target) expandSection(target);
 }

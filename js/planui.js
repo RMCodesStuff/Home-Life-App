@@ -3,6 +3,7 @@
 import { esc } from './render.js';
 import { icon } from './icons.js';
 import { fmtDateRange, fmtDateLong } from './time.js';
+import { rowExpanded, todoIsOpen } from './uistate.js';
 import { PLAN_PREFIX, decodePlan, encodePlan, parsePlanInput, planRange, planStops, rowOf } from './plan.js';
 
 // the app wires these in at boot: {getPlan, getDone, setPlan(plan), removePlan(), setDone(id, on)}
@@ -12,26 +13,52 @@ export function initPlanUI(h) { host = h; }
 // ---------- rows ----------
 const cb = (attr, id, checked, label) => `<input type="checkbox" class="plan-cb" ${attr}="${esc(id)}"${checked ? ' checked' : ''} aria-label="${esc(label)}">`;
 
-function rowHTML(r, { now = false } = {}) {
-  const meta = [
-    r.where ? `<span class="plan-where">${esc(r.where)}</span>` : '',
-    r.who ? `<span class="plan-chip plan-who">${esc(r.who)}</span>` : '',
-    ...r.tags.map((t) => `<span class="plan-chip plan-tag-${esc(t.key)}">${esc(t.label)}</span>`),
-  ].filter(Boolean).join('');
+/** Live-wait chips for a stop. */
+const waitChips = (r) => (r.waits && r.waits.length ? r.waits.map((w) => `<span class="plan-wait">${esc(w.name)} · <b>${w.minutes} min</b></span>`).join('') : '');
+/** The next stop's live waits, under its line in the now block. */
+const nextWaits = (r) => (r.waits && r.waits.length ? `<p class="plan-waits">${waitChips(r)}</p>` : '');
+const chev = icon('chevron', { size: 18, className: 'chev' });
+
+/**
+ * One stop. In the card (`collapsible`) the row shows checkbox, time, title and one line of chips (waits, then tags); where, who,
+ * note and family show when it is expanded (tap the row). The whole-trip sheet shows everything, no toggle.
+ */
+function rowHTML(r, { now = false, collapsible = false } = {}) {
+  const tags = r.tags.map((t) => `<span class="plan-chip plan-tag-${esc(t.key)}">${esc(t.label)}</span>`).join('');
+  const chips = collapsible ? `${waitChips(r)}${tags}` : `${r.who ? `<span class="plan-chip plan-who">${esc(r.who)}</span>` : ''}${tags}`;
+  const detail = [
+    collapsible && (r.where || r.who) ? `<p class="plan-meta">${r.where ? `<span class="plan-where">${esc(r.where)}</span>` : ''}${r.who ? `<span class="plan-chip plan-who">${esc(r.who)}</span>` : ''}</p>` : '',
+    r.note ? `<p class="plan-note">${esc(r.note)}</p>` : '',
+    r.family ? `<p class="plan-family">${icon('people', { size: 14 })}<span>${esc(r.family)}</span></p>` : '',
+  ].join('');
+  let body;
+  if (collapsible) {
+    const open = rowExpanded(r.id, now);
+    const did = `plan-d-${esc(r.id)}`;
+    const head = `<span class="plan-rtitle">${esc(r.title)}</span>${chips ? `<span class="plan-meta plan-meta-line">${chips}</span>` : ''}`;
+    body = detail
+      ? `<button type="button" class="plan-toggle" data-toggle-row="${esc(r.id)}" aria-expanded="${open}" aria-controls="${did}"><span class="plan-th">${head}</span>${chev}</button>
+      <div class="plan-detail" id="${did}"${open ? '' : ' hidden'}>${detail}</div>`
+      : `<div class="plan-toggle static"><span class="plan-th">${head}</span></div>`;
+  } else {
+    body = `<p class="plan-rtitle">${esc(r.title)}</p>
+      ${r.where ? `<p class="plan-meta"><span class="plan-where">${esc(r.where)}</span>${chips}</p>` : chips ? `<p class="plan-meta">${chips}</p>` : ''}
+      ${r.note ? `<p class="plan-note">${esc(r.note)}</p>` : ''}
+      ${r.family ? `<p class="plan-family">${icon('people', { size: 14 })}<span>${esc(r.family)}</span></p>` : ''}
+      ${r.waits && r.waits.length ? `<p class="plan-waits">${waitChips(r)}</p>` : ''}`;
+  }
   return `<li class="plan-row${now ? ' is-now' : ''}">
     ${cb('data-plan-item', r.id, r.done, `done: ${r.title}`)}
     <span class="plan-time">${esc(r.clock)}</span>
-    <div class="plan-body">
-      <p class="plan-rtitle">${esc(r.title)}</p>
-      ${meta ? `<p class="plan-meta">${meta}</p>` : ''}
-      ${r.note ? `<p class="plan-note">${esc(r.note)}</p>` : ''}
-      ${r.family ? `<p class="plan-family">${icon('people', { size: 14 })}<span>${esc(r.family)}</span></p>` : ''}
-      ${r.waits && r.waits.length ? `<p class="plan-waits">${r.waits.map((w) => `<span class="plan-wait">${esc(w.name)} · <b>${w.minutes} min</b></span>`).join('')}</p>` : ''}
-    </div>
+    <div class="plan-body">${body}</div>
   </li>`;
 }
-const todoHTML = (todo, label = 'to do') => (todo.length
-  ? `<p class="tp-label">${label}</p><ul class="checks">${todo.map((c) => `<li><label class="check"><input type="checkbox" data-plan-check="${esc(c.id)}"><span>${esc(c.text)}</span></label></li>`).join('')}</ul>` : '');
+/** The to-do list: a details element, open when short, before the first stop or looking ahead (see todoIsOpen), else closed. */
+const todoHTML = (todo, view = {}, label = 'to do') => {
+  if (!todo.length) return '';
+  const open = todoIsOpen({ count: todo.length, status: view.status, mode: view.mode });
+  return `<details class="plan-todo"${open ? ' open' : ''}><summary>${label} · ${todo.length}${chev}</summary><ul class="checks">${todo.map((c) => `<li><label class="check"><input type="checkbox" data-plan-check="${esc(c.id)}"><span>${esc(c.text)}</span></label></li>`).join('')}</ul></details>`;
+};
 const footHTML = (plan) => `<div class="plan-foot"><button class="btn" type="button" data-action="open-plan">whole trip</button>${plan.source ? `<a class="plan-src" href="${esc(plan.source)}" target="_blank" rel="noopener">original plan</a>` : ''}</div>`;
 const eyebrow = (text) => `<p class="top-eyebrow">${icon('suitcase', { size: 16 })}<span>${esc(text)}</span></p>`;
 
@@ -42,30 +69,30 @@ export function planCardHTML(v) {
     return `${eyebrow(`trip plan · ${v.label}`)}
       <h2 class="plan-title">${esc(v.plan.title)}</h2>
       <p class="plan-sub">first day · ${esc(fmtDateLong(v.day.date))}${v.day.title ? ` · ${esc(v.day.title)}` : ''}</p>
-      ${todoHTML(v.todo)}${footHTML(v.plan)}`;
+      ${todoHTML(v.todo, v)}${footHTML(v.plan)}`;
   }
   const sub = [v.day.hours, v.day.summary].filter(Boolean).map(esc).join(' · ');
   const head = `<h2 class="plan-title">${esc(v.day.title || fmtDateLong(v.day.date))}</h2>${sub ? `<p class="plan-sub">${sub}</p>` : ''}`;
   if (v.mode === 'tomorrow') {
     return `${eyebrow("tomorrow's plan")}${head}
       ${v.first ? `<div class="plan-now"><p class="plan-kicker">first up</p><p class="plan-big"><span class="plan-bt">${esc(v.first.clock)}</span> ${esc(v.first.title)}</p></div>` : ''}
-      ${todoHTML(v.todo)}
-      ${v.items.length ? `<ul class="plan-list">${v.items.map((r) => rowHTML(r)).join('')}</ul>${v.more ? `<p class="plan-more">and ${v.more} more</p>` : ''}` : ''}
+      ${todoHTML(v.todo, v)}
+      ${v.items.length ? `<ul class="plan-list">${v.items.map((r) => rowHTML(r, { collapsible: true })).join('')}</ul>${v.more ? `<p class="plan-more">and ${v.more} more</p>` : ''}` : ''}
       ${footHTML(v.plan)}`;
   }
   const line = (r) => `<span class="plan-bt">${esc(r.clock)}</span> ${esc(r.title)}`;
   let nowBlock = '';
   if (v.status === 'before') {
-    nowBlock = `<p class="plan-kicker">first up · <span class="plan-in">${esc(v.nextIn)}</span></p><p class="plan-big">${line(v.next)}</p>${v.next.where ? `<p class="plan-meta"><span class="plan-where">${esc(v.next.where)}</span></p>` : ''}`;
+    nowBlock = `<p class="plan-kicker">first up · <span class="plan-in">${esc(v.nextIn)}</span></p><p class="plan-big">${line(v.next)}</p>${v.next.where ? `<p class="plan-meta"><span class="plan-where">${esc(v.next.where)}</span></p>` : ''}${nextWaits(v.next)}`;
   } else if (v.status === 'during') {
     nowBlock = `<p class="plan-kicker">now</p><p class="plan-big">${line(v.current)}</p>${v.current.family ? `<p class="plan-family">${icon('people', { size: 14 })}<span>${esc(v.current.family)}</span></p>` : ''}
-      ${v.next ? `<p class="plan-kicker plan-kicker-next">next · <span class="plan-in">${esc(v.nextIn)}</span></p><p class="plan-next">${line(v.next)}</p>` : '<p class="plan-kicker plan-kicker-next">that\'s the last stop on the plan</p>'}`;
+      ${v.next ? `<p class="plan-kicker plan-kicker-next">next · <span class="plan-in">${esc(v.nextIn)}</span></p><p class="plan-next">${line(v.next)}</p>${nextWaits(v.next)}` : '<p class="plan-kicker plan-kicker-next">that\'s the last stop on the plan</p>'}`;
   } else if (v.status === 'after') {
     nowBlock = `<p class="plan-big">that's the plan for today</p>${v.tomorrow ? `<p class="plan-sub">tomorrow · ${esc(v.tomorrow.title || 'the next day')}${v.tomorrow.first ? ` · first up ${esc(v.tomorrow.first)}` : ''}</p>` : ''}`;
   } else nowBlock = '<p class="plan-big">nothing planned for today</p>';
-  const earlier = v.earlier.length ? `<details class="plan-earlier"><summary>earlier · ${v.earlier.length}</summary><ul class="plan-list">${v.earlier.map((r) => rowHTML(r)).join('')}</ul></details>` : '';
-  const upcoming = v.upcoming.length ? `<ul class="plan-list">${v.upcoming.map((r) => rowHTML(r, { now: !!v.current && r.id === v.current.id })).join('')}</ul>` : '';
-  return `${eyebrow("today's plan")}${head}<div class="plan-now">${nowBlock}</div>${todoHTML(v.todo)}${earlier}${upcoming}${footHTML(v.plan)}`;
+  const earlier = v.earlier.length ? `<details class="plan-earlier"><summary>earlier · ${v.earlier.length}</summary><ul class="plan-list">${v.earlier.map((r) => rowHTML(r, { collapsible: true })).join('')}</ul></details>` : '';
+  const upcoming = v.upcoming.length ? `<ul class="plan-list">${v.upcoming.map((r) => rowHTML(r, { now: !!v.current && r.id === v.current.id, collapsible: true })).join('')}</ul>` : '';
+  return `${eyebrow("today's plan")}${head}<div class="plan-now">${nowBlock}</div>${todoHTML(v.todo, v)}${earlier}${upcoming}${footHTML(v.plan)}`;
 }
 
 // ---------- the whole-trip sheet ----------
