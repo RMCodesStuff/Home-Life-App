@@ -18,7 +18,9 @@ import { readAloudText, toggleSpeech, canSpeak } from './js/speech.js';
 import { relTime } from './js/time.js';
 import { writeAll, modelForDate, withEasyPace } from './js/insights.js';
 import { buildFacts, fingerprint, writeWithClaude, mergeWritten, friendlyAiError } from './js/ai.js';
-import { renderAll, renderPlanCard, clockAt } from './js/render.js';
+import { renderAll, renderPlanCard, clockAt, syncClamps } from './js/render.js';
+import { ui, setFineOpen } from './js/uistate.js';
+import { initJumpBar, updateJumpBar, jumpTo } from './js/jumpbar.js';
 import { initSettings, openSettings, refreshStatus, setInstallPrompt, mountCityPicker, rebuildSettings } from './js/settings.js';
 import { offerSetupFromHash } from './js/setupui.js';
 import { loadPlan, savePlan, clearPlan, loadDone, saveDone, setDone, composePlan } from './js/plan.js';
@@ -36,6 +38,7 @@ const els = {
   plan: document.getElementById('plan'),
   dialog: document.getElementById('settings'),
   toast: document.getElementById('toast'),
+  jump: document.getElementById('jumpbar'),
 };
 
 const state = {
@@ -220,10 +223,12 @@ function render(opts = {}) {
       prefix: 'ob',
       onPick: (place) => { const st = state.settings; st.home = place; onSettingsSaved(st, 'home'); },
     });
+    updateJumpBar({ ready: false, planVisible: false });
     return;
   }
   obMounted = false;
   renderAll(view, els);
+  updateJumpBar({ ready: view.status === 'ready', planVisible: !els.plan.hidden });
 }
 
 // ---------- data ----------
@@ -512,6 +517,7 @@ function speechText(view) {
 function renderPlanOnly() {
   if (!state.settings.home) return;
   renderPlanCard(planView(eveningEditionNow()), els.plan);
+  updateJumpBar({ ready: !els.hourly.hidden, planVisible: !els.plan.hidden });
 }
 const planHost = {
   getPlan: () => state.plan,
@@ -662,8 +668,26 @@ function registerSW() {
 }
 
 // ---------- boot ----------
+/** Taps on the collapsible bits of the main screen. Returns true when it handled the click. */
+function handleUiClick(e) {
+  const t = e.target.closest('[data-toggle], [data-toggle-row], [data-jump], details.plan-todo > summary');
+  if (!t) return false;
+  if (t.matches('summary')) { ui.todo = !t.parentElement.open; return false; } // the details element toggles itself
+  if (t.dataset.jump) { jumpTo(t.dataset.jump); return true; }
+  const open = t.getAttribute('aria-expanded') !== 'true';
+  if (t.dataset.toggleRow) { ui.rows.set(t.dataset.toggleRow, open); renderPlanOnly(); return true; }
+  const k = t.dataset.toggle;
+  if (k === 'narrative') ui.narrative = open;
+  else if (k === 'chips') ui.chips = open;
+  else if (k.startsWith('rd:')) ui.rd[k.slice(3)] = open;
+  else return false;
+  render();
+  return true;
+}
+
 function wire() {
   document.addEventListener('click', (e) => {
+    if (handleUiClick(e)) return;
     const b = e.target.closest('[data-action]');
     if (!b) return;
     const a = b.dataset.action;
@@ -701,6 +725,13 @@ function wire() {
   document.addEventListener('toggle', (e) => {
     if (e.target.matches && e.target.matches('details.alert')) state.alertOpen = e.target.open;
   }, true);
+  document.addEventListener('toggle', (e) => {
+    if (e.target.matches && e.target.matches('details.fine-more')) setFineOpen(e.target.open);
+  }, true);
+  let clampRaf = 0;
+  const reclamp = () => { cancelAnimationFrame(clampRaf); clampRaf = requestAnimationFrame(() => syncClamps(els.hero)); };
+  window.addEventListener('resize', reclamp);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(reclamp);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && state.settings.home) {
       if (Date.now() - state.lastRefresh > STALE_MS) refresh();
@@ -723,6 +754,7 @@ function boot() {
   initSettings(els.dialog, { getSettings: () => cloneSettings(state.settings), save: onSettingsSaved, getStatus, reload: reloadSource });
   pruneTripChecks();
   initPlanSheet();
+  initJumpBar(els.jump, { openSettings: () => openSettings() });
   offerPlanFromHash();
   window.addEventListener('hashchange', offerPlanFromHash); // a plan link opened while the app is already running
   const offerSetup = () => offerSetupFromHash({ getSettings: () => cloneSettings(state.settings), apply: applySetupSettings });

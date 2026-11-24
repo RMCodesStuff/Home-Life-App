@@ -10,6 +10,7 @@ import { workoutTitle, workoutDetail, windowLine } from './workout.js';
 import { osmTile, radarTile } from './phoenix.js';
 import { LINKS } from './connections.js';
 import { planCardHTML } from './planui.js';
+import { ui, limitChips, CHIP_LIMIT, fineOpen } from './uistate.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 /** Escape, then turn *one phrase* into <em>. */
@@ -70,6 +71,30 @@ export function lastNightHTML(view) {
 
 // ---------- hero ----------
 const chipHTML = (c) => `<li class="chip${c.accent ? ' chip-accent' : ''}">${icon(c.icon || 'calendar', { size: 16 })}<b>${esc(c.label)}</b><span>${esc(c.text)}</span></li>`;
+/** The hero's chip list: the first few, then a "+N more" button (the choice survives re-renders). `items` are <li> strings. */
+function chipsHTML(items, fade = '') {
+  const { shown, hidden } = limitChips(items, ui.chips);
+  const btn = (label, open) => `<li class="chip chip-btn chip-more"><button type="button" data-toggle="chips" aria-expanded="${open}">${label}</button></li>`;
+  const toggle = hidden ? btn(`+${hidden} more`, false) : ui.chips && items.length > CHIP_LIMIT ? btn('fewer', true) : '';
+  return `<ul class="chips${fade}">${shown.join('')}${toggle}</ul>`;
+}
+/** A paragraph clamped to 3 lines with a more / less button (the button shows only when the text overflows: see syncClamps). */
+const narrativeHTML = (html, fade = '') => `<p class="narrative${ui.narrative ? '' : ' is-clamped'}${fade}" data-clamp>${html}</p>
+    <button class="text-btn more-btn" type="button" data-toggle="narrative" aria-expanded="${ui.narrative ? 'true' : 'false'}" hidden>${ui.narrative ? 'less' : 'more'}</button>`;
+/** The chip that jumps to the plan: what's next and when. */
+function planNextChip(view) {
+  const p = view.plan;
+  if (!p || p.mode !== 'today' || !p.next) return '';
+  return `<li class="chip chip-btn chip-next chip-accent"><button type="button" data-jump="plan">${icon('suitcase', { size: 16 })}<b>next</b><span>${esc(p.next.clock)} ${esc(p.next.title)} · ${esc(p.nextIn)}</span></button></li>`;
+}
+/** After a render: show each clamped paragraph's button only when the text is actually cut off. */
+export function syncClamps(root = document) {
+  root.querySelectorAll('[data-clamp]').forEach((p) => {
+    const b = p.nextElementSibling;
+    if (!b || !b.matches('[data-toggle]')) return;
+    b.hidden = ui.narrative ? false : p.scrollHeight - p.clientHeight <= 1;
+  });
+}
 /** Footer buttons: read it to me (when the browser can) and refresh. */
 function footButtons(view) {
   const speak = view.canSpeak && view.settings.show.speak !== false
@@ -152,16 +177,17 @@ export function heroHTML(view) {
     ${lastNightHTML(view)}
     ${alerts}
     <h1 class="headline${fade}">${esc(w.headline_lead)} <em>${esc(w.headline_accent)}</em></h1>
-    <p class="narrative${fade}">${prose(w.narrative)}</p>
-    <ul class="chips${fade}">
-      <li class="chip">${icon('umbrella', { size: 16 })}<b>umbrella</b><span>${esc(w.umbrella)}</span></li>
-      <li class="chip">${icon('shirt', { size: 16 })}<b>wear</b><span>${esc(w.wear)}</span></li>
-      ${w.leave_chip ? `<li class="chip">${icon('car', { size: 16 })}<b>leave</b><span>${esc(w.leave_chip.replace(/^leave\s+/, ''))}</span></li>` : ''}
-      ${extra.filter((c) => c.after === 'leave').map(chipHTML).join('')}
-      <li class="chip chip-accent">${icon('sunwindow', { size: 16 })}<b>best window</b><span>${esc(w.best_window)}</span></li>
-      ${w.inbox_chip ? `<li class="chip">${icon('inbox', { size: 16 })}<b>inbox</b><span>${esc(w.inbox_chip)}</span></li>` : ''}
-      ${extra.filter((c) => c.after !== 'leave').map(chipHTML).join('')}
-    </ul>
+    ${narrativeHTML(prose(w.narrative), fade)}
+    ${chipsHTML([
+    planNextChip(view),
+    `<li class="chip">${icon('umbrella', { size: 16 })}<b>umbrella</b><span>${esc(w.umbrella)}</span></li>`,
+    `<li class="chip">${icon('shirt', { size: 16 })}<b>wear</b><span>${esc(w.wear)}</span></li>`,
+    w.leave_chip ? `<li class="chip">${icon('car', { size: 16 })}<b>leave</b><span>${esc(w.leave_chip.replace(/^leave\s+/, ''))}</span></li>` : '',
+    ...extra.filter((c) => c.after === 'leave').map(chipHTML),
+    `<li class="chip chip-accent">${icon('sunwindow', { size: 16 })}<b>best window</b><span>${esc(w.best_window)}</span></li>`,
+    w.inbox_chip ? `<li class="chip">${icon('inbox', { size: 16 })}<b>inbox</b><span>${esc(w.inbox_chip)}</span></li>` : '',
+    ...extra.filter((c) => c.after !== 'leave').map(chipHTML),
+  ].filter(Boolean), fade)}
     <div class="hero-foot">
       <span>${footParts.join(' · ')}</span>
       ${footButtons(view)}
@@ -169,28 +195,34 @@ export function heroHTML(view) {
 }
 
 // ---------- the rundown (the daily claude run) ----------
+/** One rundown section: heading + one-line summary; the detail opens on tap (the choice survives re-renders). `after` stays visible. */
+function rdSection(key, title, summary, detail, after = '') {
+  if (!detail) return `<div class="rd-sec"><h3 class="rd-h">${title}</h3>${summary ? `<p class="rd-line">${esc(summary)}</p>` : ''}${after}</div>`;
+  const open = !!ui.rd[key];
+  return `<div class="rd-sec"><h3 class="rd-h"><button class="rd-toggle" type="button" data-toggle="rd:${key}" aria-expanded="${open}" aria-controls="rd-${key}">
+      <span class="rd-t">${title}</span>${summary ? `<span class="rd-sum">${esc(summary)}</span>` : ''}${icon('chevron', { size: 20, className: 'chev' })}</button></h3>
+    <div class="rd-detail" id="rd-${key}"${open ? '' : ' hidden'}>${detail}</div>${after}</div>`;
+}
 export function rundownHTML(view) {
   const r0 = view.home && view.home.rundown;
   if (!r0) return '';
   const rows = (list) => (list.length ? `<ul class="rd-rows">${list.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : '');
   const m = r0.money;
   const b = m && m.budget;
-  const money = m ? `<div class="rd-sec"><h3 class="rd-h">Money</h3>
-      ${m.line ? `<p class="rd-line">${esc(m.line)}</p>` : ''}
-      ${m.bills.length ? `<p class="rd-label">bills due</p>${rows(m.bills.map((x) => x.text))}` : ''}
+  const moneyDetail = m ? `${m.bills.length ? `<p class="rd-label">bills due</p>${rows(m.bills.map((x) => x.text))}` : ''}
       ${b ? `<div class="rd-budget" role="img" aria-label="${esc(`${b.spentPct}% of the budget spent, ${b.status}`)}">
         <div class="rd-bar"><span class="rd-fill${b.status === 'over budget' ? ' over' : ''}" style="width:${(b.fill * 100).toFixed(1)}%"></span>${b.marker != null ? `<span class="rd-mark" style="left:${(b.marker * 100).toFixed(1)}%"></span>` : ''}</div>
         <p class="rd-bud">${esc(b.text)} · <span class="${b.status === 'on pace' || b.status === 'under pace' ? '' : 'warn'}">${esc(b.status)}</span></p></div>` : ''}
       ${m.over.length ? `<p class="rd-label">over budget</p>${rows(m.over)}` : ''}
-      ${m.notable.length ? `<p class="rd-label">notable</p>${rows(m.notable)}` : ''}
-    </div>` : '';
+      ${m.notable.length ? `<p class="rd-label">notable</p>${rows(m.notable)}` : ''}`.trim() : '';
+  const moneySum = m ? m.line || (b ? b.text : '') || (m.bills.length ? `${m.bills.length} ${m.bills.length === 1 ? 'bill' : 'bills'} due` : '') : '';
+  const money = m ? rdSection('money', 'Money', moneySum, moneyDetail) : '';
   const f = r0.fantasy;
-  const fantasy = f ? `<div class="rd-sec"><h3 class="rd-h">Fantasy</h3>
-      ${f.line ? `<p class="rd-line">${esc(f.line)}</p>` : ''}${rows([...f.alerts, ...f.swaps, ...f.waivers])}</div>` : '';
+  const fRows = f ? [...f.alerts, ...f.swaps, ...f.waivers] : [];
+  const fantasy = f ? rdSection('fantasy', 'Fantasy', f.line || (fRows.length ? `${fRows.length} to look at` : ''), rows(fRows)) : '';
   const pl = r0.playlist;
-  const playlist = pl ? `<div class="rd-sec"><h3 class="rd-h">Playlist</h3>
-      <p class="rd-pl">${esc(pl.name)}</p>${pl.why ? `<p class="rd-line">${esc(pl.why)}</p>` : ''}
-      ${pl.url ? `<a class="btn btn-accent rd-btn" href="${esc(pl.url)}" target="_blank" rel="noopener">${icon('speaker', { size: 16 })} open in spotify</a>` : ''}</div>` : '';
+  const playlist = pl ? rdSection('playlist', 'Playlist', pl.name, pl.why ? `<p class="rd-line">${esc(pl.why)}</p>` : '',
+    pl.url ? `<a class="btn btn-accent rd-btn" href="${esc(pl.url)}" target="_blank" rel="noopener">${icon('speaker', { size: 16 })} open in spotify</a>` : '') : '';
   return `<div class="card-head"><h2>The rundown</h2><p class="sub">${esc(r0.sub)}</p></div>
     <hr class="rule">
     ${r0.note ? `<p class="rd-note">${esc(r0.note)}</p>` : ''}
@@ -209,7 +241,7 @@ export function tomorrowHeroHTML(view) {
     view.travelLineTarget ? `<p class="travel">${esc(view.travelLineTarget)}</p>` : '',
     `<p class="travel"><button class="text-btn" type="button" data-action="show-today">now ${r(m.current.temp)}° · show today</button></p>`,
   ].join('');
-  const chips = [...t.chips.map((c) => ({ ...c, icon: TOMORROW_ICONS[c.key] })), ...(view.home ? view.home.chipsTomorrow : [])].map(chipHTML).join('');
+  const chips = [...t.chips.map((c) => ({ ...c, icon: TOMORROW_ICONS[c.key] })), ...(view.home ? view.home.chipsTomorrow : [])].map(chipHTML);
   const foot = [view.wxStale ? `<span class="warn">offline · showing ${esc(clockAt(view.wxFetchedAt, m.offset))}</span>` : `updated ${esc(clockAt(view.wxFetchedAt, m.offset))}`, 'written on-device', ...rundownFoot(view)];
   return `
     <div class="eyebrow">
@@ -225,8 +257,8 @@ export function tomorrowHeroHTML(view) {
       <p class="cond-sub">low ${deg(t.low)}${t.sunrise ? ` · sunrise ${esc(fmtClock(t.sunrise))}` : ''}</p></div>
     </div>
     <h1 class="headline${fade}">${esc(t.headline_lead)} <em>${esc(t.headline_accent)}</em></h1>
-    <p class="narrative${fade}">${prose(t.narrative)}</p>
-    <ul class="chips${fade}">${chips}</ul>
+    ${narrativeHTML(prose(t.narrative), fade)}
+    ${chipsHTML(chips, fade)}
     <div class="hero-foot">
       <span>${foot.join(' · ')}</span>
       ${footButtons(view)}
@@ -571,21 +603,35 @@ export function fineHTML(view) {
     </svg>${dot}${nightNote}</div>`;
   const stats = (written.fine || []).map((s) => `<div class="stat"><dt>${esc(s.label)}</dt><dd class="sv">${esc(s.value)}</dd><dd class="sn">${esc(s.note)}</dd></div>`).join('');
   const curTime = m.current.time ? fmtClock(m.current.time) : clockAt(view.wxFetchedAt, m.offset);
+  const sum = [d.sunrise ? `sunrise ${fmtClock(d.sunrise)}` : '', d.sunset ? `sunset ${fmtClock(d.sunset)}` : ''].filter(Boolean).join(' · ');
   return `<div class="card-head"><h2>The fine print</h2><p class="sub">open-meteo current, ${esc(curTime)}</p></div>
-    <div class="sunwrap">${svg}
-      <div class="sun-ends"><span><b>${esc(d.sunrise ? fmtClock(d.sunrise) : '—')}</b>sunrise</span><span class="r"><b>${esc(d.sunset ? fmtClock(d.sunset) : '—')}</b>sunset</span></div>
-    </div>
-    <hr class="rule">
-    <dl class="stats">${stats}</dl>`;
+    ${sum ? `<p class="fine-sum">${esc(sum)}</p>` : ''}
+    <details class="fine-more"${fineOpen() ? ' open' : ''}><summary><span class="fm-closed">show the details</span><span class="fm-open">hide the details</span>${icon('chevron', { size: 18, className: 'chev' })}</summary>
+      <div class="sunwrap">${svg}
+        <div class="sun-ends"><span><b>${esc(d.sunrise ? fmtClock(d.sunrise) : '—')}</b>sunrise</span><span class="r"><b>${esc(d.sunset ? fmtClock(d.sunset) : '—')}</b>sunset</span></div>
+      </div>
+      <hr class="rule">
+      <dl class="stats">${stats}</dl>
+    </details>`;
 }
 
 // ---------- all ----------
 /** Fills the trip plan card (hidden when `plan` is null), keeping the keyboard focus on the same checkbox. */
+/** A selector that finds the same control again after its card is re-rendered ('' = nothing to restore). */
+export function focusSelector(f) {
+  if (!f || !f.matches) return '';
+  for (const a of ['data-plan-item', 'data-plan-check', 'data-toggle-row', 'data-toggle', 'data-jump']) {
+    if (f.hasAttribute(a) && f.matches('input, button')) return `${f.tagName.toLowerCase()}[${a}="${CSS.escape(f.getAttribute(a))}"]`;
+  }
+  if (f.matches('details.plan-todo > summary')) return 'details.plan-todo > summary';
+  if (f.matches('details.fine-more > summary')) return 'details.fine-more > summary';
+  return '';
+}
 export function renderPlanCard(plan, el) {
   const html = plan ? planCardHTML(plan) : '';
   if (!html) { el.hidden = true; el.innerHTML = ''; return; }
   const f = document.activeElement;
-  const sel = f && el.contains(f) && f.matches('input[data-plan-item], input[data-plan-check]') ? `input[${f.hasAttribute('data-plan-item') ? 'data-plan-item' : 'data-plan-check'}="${CSS.escape(f.getAttribute('data-plan-item') || f.getAttribute('data-plan-check'))}"]` : '';
+  const sel = f && el.contains(f) ? focusSelector(f) : '';
   const open = el.querySelector('details.plan-earlier') && el.querySelector('details.plan-earlier').open;
   el.innerHTML = html;
   el.hidden = false;
@@ -597,16 +643,22 @@ export function renderPlanCard(plan, el) {
 export function renderAll(view, els) {
   const strip = els.hourly.querySelector('.hstrip');
   const scrollLeft = strip ? strip.scrollLeft : 0;
+  // keep the keyboard focus on the same toggle across the re-render (hero and rundown)
+  const af = document.activeElement;
+  const hostEl = af && [els.hero, els.rundown, els.fine].find((e) => e && e.contains(af));
+  const refocus = hostEl ? { host: hostEl, sel: focusSelector(af) } : null;
   els.hero.innerHTML = heroHTML(view);
   if (els.plan) renderPlanCard(view.plan, els.plan);
   const ready = view.status === 'ready';
   for (const k of ['hourly', 'week', 'fine']) els[k].hidden = !ready;
   const rundown = ready ? rundownHTML(view) : '';
   if (els.rundown) { els.rundown.hidden = !rundown; if (rundown) els.rundown.innerHTML = rundown; }
-  if (!ready) return;
+  if (!ready) { syncClamps(els.hero); return; }
   els.hourly.innerHTML = hourlyHTML(view);
   els.week.innerHTML = weekHTML(view);
   els.fine.innerHTML = fineHTML(view);
   const s2 = els.hourly.querySelector('.hstrip');
   if (s2 && scrollLeft && !view.resetScroll) s2.scrollLeft = scrollLeft;
+  syncClamps(els.hero);
+  if (refocus && refocus.sel) { const n = refocus.host.querySelector(refocus.sel); if (n) n.focus({ preventScroll: true }); }
 }
